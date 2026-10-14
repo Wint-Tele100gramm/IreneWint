@@ -1,0 +1,9 @@
+{
+    "v": "1.0",
+    "url": "http://homeassistant.local:8123",
+    "token": "",
+    "aliases": {},
+    "match_threshold": 0.45,
+    "refresh_minutes": 10,
+    "say_confirm": true
+}

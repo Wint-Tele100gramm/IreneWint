@@ -1,0 +1,84 @@
+# Ирина на ТВ-приставке RK3528
+
+Сборка голосового помощника Ирина для приставки на RK3528 (4×Cortex-A53, 2 ГБ ОЗУ, 16 ГБ eMMC, Armbian, Python 3.13).
+
+Что добавлено к оригинальному проекту:
+
+| Компонент | Файл | Что делает |
+|---|---|---|
+| Home Assistant | `plugins/plugin_homeassistant.py` | Управляет устройствами HA (в т.ч. ZHA/Zigbee) по имени и зоне |
+| Яндекс Музыка | `plugins/plugin_yandex_music.py` | Моя волна, поиск, исполнители, альбомы, плейлисты, лайки |
+| Звук с телефона | `plugins/plugin_audio_sources.py` + `scripts/rk3528/` | AirPlay (iOS), Bluetooth (Android и iOS), DLNA (Android) |
+| Зависимости | `requirements-rk3528.txt` | Без gradio, torch и fastapi |
+| Установка | `scripts/rk3528/install.sh` | Пакеты, venv, PipeWire, сервисы systemd |
+
+Отключены плагины только для Windows (`plugin_mediacmds`, `plugin_mpchcmult`) и `pyttsx`/`audioplayer` — они лежат в `plugins_inactive/`.
+
+## Установка
+
+```bash
+git clone -b rk3528 https://github.com/Wint-Tele100gramm/IreneWint.git ~/irene
+cd ~/irene
+PYTHON=/usr/local/bin/python3.13 bash scripts/rk3528/install.sh
+```
+
+Параметры: `--no-bt`, `--no-airplay`, `--no-dlna`, `--aec` (эхоподавление, чтобы Ирина лучше слышала имя поверх музыки).
+
+Ваш Python 3.13 должен быть собран с модулями `ssl`, `ctypes`, `sqlite3` (пакеты `libssl-dev libffi-dev libsqlite3-dev` до сборки) — скрипт это проверит.
+
+### Home Assistant
+
+1. В HA: Профиль → Безопасность → Долгосрочные токены доступа → Создать.
+2. Впишите адрес и токен в `options/plugin_homeassistant.json`:
+   ```json
+   { "v": "1.0", "url": "http://192.168.1.10:8123", "token": "eyJ...", "aliases": {} }
+   ```
+3. Устройства ищутся по их имени и зоне в HA. Если имя неудобно произносить, добавьте синоним:
+   `"aliases": { "ночник": "light.0x00158d0001a2b3c4", "свет в зале": ["light.a", "light.b"] }`
+
+Команды: «ирина включи свет на кухне», «выключи весь свет», «яркость в спальне тридцать», «закрой шторы», «включи розетку телевизора», «какая температура в детской», «сцена кино», «обнови устройства».
+
+### Яндекс Музыка
+
+```bash
+.venv/bin/python scripts/rk3528/yandex_token.py
+```
+Скрипт покажет код — введите его на ya.ru/device с телефона. Нужна подписка Плюс.
+
+Команды: «включи музыку» (Моя волна), «поставь кино группа крови», «включи исполнителя сплин», «включи альбом ...», «включи плейлист ...», «включи любимые песни», «пауза», «продолжи», «дальше», «назад», «громче», «тише», «громкость сорок», «что играет», «лайк», «не нравится», «выключи музыку».
+
+Когда вы говорите «Ирина», музыка приглушается, пока команда не выполнится.
+
+### Звук с телефона
+
+| Откуда | Как |
+|---|---|
+| iPhone / iPad | Пункт управления → AirPlay → «Ирина» |
+| Android и iOS | «Ирина, режим сопряжения» → в Bluetooth телефона выбрать **Irene** (3 минуты на подключение) |
+| Android | Приложение с DLNA/UPnP (BubbleUPnP, Hi-Fi Cast и др.) → устройство «Ирина» |
+
+Когда начинается AirPlay, Яндекс Музыка на приставке ставится на паузу.
+
+Bluetooth: встроенный модуль приставок на RK3528 часто не поддерживается ядром Armbian. Если `bluetoothctl list` пуст — возьмите USB-донгл (например, на чипе RTL8761B).
+
+## Управление сервисом
+
+```bash
+systemctl --user start irene irene-airplay irene-dlna
+systemctl --user restart irene
+journalctl --user -u irene -f
+```
+
+## Память (ориентировочно)
+
+| Процесс | ОЗУ |
+|---|---|
+| Vosk small-ru (распознавание) | ~300 МБ |
+| vosk-tts (озвучка) | ~250–400 МБ |
+| mpv + PipeWire + shairport-sync + gmediarender | ~100 МБ |
+
+Сервис Ирины ограничен 1,2 ГБ (`MemoryMax` в `irene.service`). Home Assistant лучше держать на отдельной машине.
+
+## Микрофон
+
+Нужен USB-микрофон или USB-звуковая карта с микрофоном. Проверка: `arecord -l`, `pactl list short sources`. Ирина слушает источник по умолчанию PipeWire (`pactl set-default-source ...`).

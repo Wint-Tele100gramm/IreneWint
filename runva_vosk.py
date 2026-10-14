@@ -122,9 +122,20 @@ if __name__ == "__main__":
 
                         mic_blocked = False
                         #print("UNBlocking microphone...")
+
+                    # плагины (например, музыка) могут вернуть громкость после команды
+                    if hasattr(core, "on_phrase_done"):
+                        try:
+                            core.on_phrase_done()
+                        except Exception as e:
+                            logger.exception(e)
                 else:
-                    #print("2",rec.PartialResult())
-                    pass
+                    # промежуточный результат: позволяет приглушить музыку, как только услышали имя
+                    if hasattr(core, "on_partial"):
+                        try:
+                            core.on_partial(json.loads(rec.PartialResult()).get("partial", ""))
+                        except Exception as e:
+                            logger.exception(e)
                 core._update_timers()
 
 

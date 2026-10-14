@@ -1,0 +1,20 @@
+[Unit]
+Description=Irene voice assistant
+After=pipewire.service pipewire-pulse.service wireplumber.service
+Wants=pipewire-pulse.service
+
+[Service]
+Type=simple
+WorkingDirectory=@REPO@
+Environment=PYTHONUNBUFFERED=1
+# 16 кГц — родная частота модели Vosk, PipeWire сам пересэмплирует микрофон
+ExecStart=@REPO@/.venv/bin/python runva_vosk.py -r 16000
+Restart=on-failure
+RestartSec=5
+# не даём Ирине съесть всю память приставки
+MemoryHigh=900M
+MemoryMax=1200M
+Nice=-5
+
+[Install]
+WantedBy=default.target

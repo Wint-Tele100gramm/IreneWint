@@ -1,0 +1,6 @@
+{
+    "v": "1.4",
+    "modelId": "vosk-model-tts-ru-0.7-multi",
+    "speakerId": 2,
+    "useGPU": false
+}

@@ -1,0 +1,12 @@
+[Unit]
+Description=DLNA/UPnP renderer for Irene (gmediarender)
+After=pipewire-pulse.service network-online.target
+Wants=pipewire-pulse.service
+
+[Service]
+ExecStart=/usr/bin/gmediarender -f "Ирина" --gstout-audiosink=pulsesink --logfile=/dev/null
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,8 @@
+{
+    "v": "1.0",
+    "token": "",
+    "volume": 60,
+    "duck_volume": 15,
+    "max_bitrate": 320,
+    "mpv_args": ["--ao=pulse"]
+}
