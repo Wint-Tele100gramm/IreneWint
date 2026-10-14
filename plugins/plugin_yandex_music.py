@@ -498,6 +498,8 @@ def _set_volume(value):
 
 
 def cmd_volume_set(core: VACore, phrase: str):
+    if delegate_longer_command(core, __name__):  # "громкость голоса ..." — громкость ответов в комнате
+        return
     value = extract_number(phrase)
     if value is None or not _player:
         core.say("Скажите громкость от нуля до ста")

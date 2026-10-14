@@ -49,6 +49,27 @@ for f in "$REPO"/options_rk3528/*.json; do
   [ -e "$REPO/options/$(basename "$f")" ] || cp "$f" "$REPO/options/"
 done
 
+echo "==> Сервер комнат (клиенты ESP32)"
+if [ ! -e "$REPO/runva_rooms.json" ]; then
+  ROOMS_TOKEN="$("$REPO/.venv/bin/python" -c 'import secrets; print(secrets.token_urlsafe(12))')"
+  cat > "$REPO/runva_rooms.json" <<JSON
+{
+    "host": "0.0.0.0",
+    "port": 8765,
+    "token": "$ROOMS_TOKEN",
+    "model": "model",
+    "local_room": "",
+    "local_device": null,
+    "arbitration_ms": 450,
+    "max_segment_sec": 12,
+    "default_volume": 70,
+    "tts_chunk_bytes": 4096
+}
+JSON
+  chmod 600 "$REPO/runva_rooms.json"
+fi
+ROOMS_TOKEN="$("$REPO/.venv/bin/python" -c "import json; print(json.load(open('$REPO/runva_rooms.json'))['token'])")"
+
 echo "==> Звук: PipeWire в пользовательской сессии (работает и без входа в систему)"
 sudo loginctl enable-linger "$USER"
 sudo usermod -aG audio "$USER"
@@ -108,9 +129,12 @@ cat <<EOF
   1. Home Assistant: впишите url и token в $REPO/options/plugin_homeassistant.json
      (файл появится после первого запуска; токен: Профиль HA -> Безопасность -> Долгосрочные токены)
   2. Яндекс Музыка:  $REPO/.venv/bin/python $SCRIPTS/yandex_token.py
-  3. Запуск:          systemctl --user start $UNITS
+  3. Клиенты ESP32 (esp32_client/README.md): сервер $(hostname -I | awk '{print $1}'), порт 8765,
+     ключ: $ROOMS_TOKEN
+     Микрофон самой приставки как комната: "local_room": "Гостиная" в $REPO/runva_rooms.json
+  4. Запуск:          systemctl --user start $UNITS
      Логи:            journalctl --user -u irene -f
-  4. Проверьте микрофон: arecord -l   и   pactl list short sources
+  5. Проверьте микрофон: arecord -l   и   pactl list short sources
 
 Перезайдите по SSH, чтобы применились группы audio/bluetooth.
 EOF

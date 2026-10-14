@@ -7,8 +7,9 @@ Wants=pipewire-pulse.service
 Type=simple
 WorkingDirectory=@REPO@
 Environment=PYTHONUNBUFFERED=1
-# 16 кГц — родная частота модели Vosk, PipeWire сам пересэмплирует микрофон
-ExecStart=@REPO@/.venv/bin/python runva_vosk.py -r 16000
+# Сервер комнат: клиенты ESP32 + (если задан local_room в runva_rooms.json) микрофон самой приставки.
+# Вариант без клиентов, только микрофон приставки: runva_vosk.py -r 16000
+ExecStart=@REPO@/.venv/bin/python runva_rooms.py
 Restart=on-failure
 RestartSec=5
 # не даём Ирине съесть всю память приставки

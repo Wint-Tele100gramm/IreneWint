@@ -208,9 +208,15 @@ def _find_entities(core, phrase: str, allowed_domains=None):
     with _lock:
         candidates = [e for e in _entities if not hint_domains or e["domain"] in hint_domains]
 
+    # комната, откуда пришла команда (сервер комнат runva_rooms.py); её имя = зона в Home Assistant
+    room = getattr(core, "current_room", None)
+    room_stems = _stems(getattr(room, "name", "") or "")
+
     if not query:
-        # только "свет" без уточнения — не угадываем
-        return [], phrase
+        if not room_stems:
+            # только "свет" без уточнения и без комнаты — не угадываем
+            return [], phrase
+        query = set(room_stems)  # "включи свет" в спальне -> свет в зоне "Спальня"
 
     scored = []
     for e in candidates:
@@ -222,7 +228,10 @@ def _find_entities(core, phrase: str, allowed_domains=None):
             score -= 0.01  # попали только в зону — чуть ниже точного совпадения по имени
         # похожесть строк на случай неточного распознавания
         ratio = difflib.SequenceMatcher(None, " ".join(sorted(query)), " ".join(sorted(target))).ratio()
-        scored.append((max(score, ratio * 0.9), e))
+        score = max(score, ratio * 0.9)
+        if room_stems and score > 0 and e["area_stems"] & room_stems:
+            score += 0.05  # при равенстве выбираем устройство в той же комнате
+        scored.append((score, e))
 
     if not scored:
         return [], phrase
