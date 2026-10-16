@@ -4,8 +4,10 @@ After=bluetooth.service
 Requires=bluetooth.service
 
 [Service]
-ExecStartPre=/usr/bin/bluetoothctl power on
-ExecStartPre=/usr/bin/bluetoothctl pairable on
+# адаптер появляется не сразу после старта bluetooth.service — даём ему время, ошибки не фатальны
+ExecStartPre=/bin/sleep 3
+ExecStartPre=-/usr/bin/bluetoothctl power on
+ExecStartPre=-/usr/bin/bluetoothctl pairable on
 ExecStart=/usr/bin/bt-agent --capability=NoInputNoOutput
 Restart=on-failure
 RestartSec=5

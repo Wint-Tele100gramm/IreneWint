@@ -152,9 +152,16 @@ if [ $WITH_BT = 1 ]; then
   sudo sed -i -E 's/^#?\s*Name\s*=.*/Name = Irene/; s/^#?\s*Class\s*=.*/Class = 0x200414/; s/^#?\s*DiscoverableTimeout\s*=.*/DiscoverableTimeout = 180/' /etc/bluetooth/main.conf
   sudo cp "$SCRIPTS/irene-bt-agent.service" /etc/systemd/system/
   sudo systemctl daemon-reload
-  sudo systemctl enable --now bluetooth irene-bt-agent
-  if ! bluetoothctl list | grep -q Controller; then
-    echo "!! Bluetooth-адаптер не найден. Встроенный модуль приставки может не поддерживаться ядром — подойдёт USB-донгл."
+  sudo systemctl enable --now bluetooth || true
+  sleep 2
+  if bluetoothctl list 2>/dev/null | grep -q Controller; then
+    sudo systemctl enable irene-bt-agent
+    sudo systemctl restart irene-bt-agent || echo "!! Bluetooth-агент не запустился: journalctl -u irene-bt-agent -n 30"
+  else
+    sudo systemctl disable irene-bt-agent 2>/dev/null || true
+    echo "!! Bluetooth-адаптер не найден — Bluetooth пропущен, остальное работает."
+    echo "!! Встроенный модуль приставки может не поддерживаться ядром — подойдёт USB-донгл (RTL8761B),"
+    echo "!! после подключения: sudo systemctl enable --now irene-bt-agent"
   fi
 fi
 
