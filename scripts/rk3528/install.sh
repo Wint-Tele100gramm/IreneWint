@@ -32,9 +32,30 @@ PKGS="mpv socat alsa-utils libportaudio2 libsndfile1 pipewire pipewire-pulse pip
 [ $WITH_AIRPLAY = 1 ] && PKGS="$PKGS shairport-sync avahi-daemon"
 [ $WITH_DLNA = 1 ] && PKGS="$PKGS gmediarender gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-pulseaudio"
 [ $WITH_BT = 1 ] && PKGS="$PKGS bluez bluez-tools libspa-0.2-bluetooth"
-sudo apt-get update
+sudo apt-get update || echo "!! apt-get update завершился с ошибкой — проверьте зеркала в /etc/apt/sources.list*"
+# ставим только те пакеты, что есть в репозиториях: иначе apt откажется ставить и все остальные
+AVAILABLE=""; MISSING=""
+for p in $PKGS; do
+  if apt-cache show "$p" >/dev/null 2>&1; then AVAILABLE="$AVAILABLE $p"; else MISSING="$MISSING $p"; fi
+done
 # shellcheck disable=SC2086
-sudo apt-get install -y --no-install-recommends $PKGS
+sudo apt-get install -y --no-install-recommends $AVAILABLE || {
+  echo "!! Часть пакетов не скачалась. Повторяю по одному..."
+  FAILED=""
+  for p in $AVAILABLE; do
+    sudo apt-get install -y --no-install-recommends "$p" >/dev/null 2>&1 || FAILED="$FAILED $p"
+  done
+  MISSING="$MISSING$FAILED"
+}
+if [ -n "$MISSING" ]; then
+  echo
+  echo "!! Не удалось установить:$MISSING"
+  case "$MISSING" in *mpv*|*libportaudio2*|*pipewire-pulse*)
+    echo "!! Без этих пакетов Ирина не заработает. Пришлите вывод: sudo apt-get install$MISSING"; exit 1 ;;
+  esac
+  echo "!! Остальное необязательно — соответствующая функция (AirPlay/DLNA/Bluetooth) не будет работать."
+  echo
+fi
 
 echo "==> Python-окружение ($PYTHON)"
 "$PYTHON" -c "import ssl, ctypes, sqlite3" || {
