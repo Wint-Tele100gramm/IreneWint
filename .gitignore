@@ -14,3 +14,6 @@
 /runva_webapi.json
 /model-vosk-sherpa
 /runva_rooms.json
+/silero_model_v4.pt
+/silero_model_v4.pt.part
+/test.wav

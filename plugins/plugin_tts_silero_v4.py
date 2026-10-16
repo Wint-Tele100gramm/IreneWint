@@ -62,6 +62,13 @@ def init(core:VACore):
     core.model = torch.package.PackageImporter(local_file).load_pickle("tts_models", "model")
     core.model.to(device)
 
+    # прогрев: первый синтез заметно медленнее, пусть он случится при запуске, а не на первом ответе
+    try:
+        with torch.inference_mode():
+            core.model.apply_tts(text="Привет", speaker=options["speaker"], sample_rate=options["sample_rate"])
+    except Exception as e:
+        print("Silero: прогрев не удался:", e)
+
 
     #core.model.
 
@@ -76,20 +83,23 @@ def towavfile(core:VACore, text_to_speech:str, wavfile:str):
     speaker = options["speaker"]
 
     # дополнительный резолвинг по имени обращения, если нужно
-    if core.cur_callname != "":
+    if getattr(core, "cur_callname", ""):
         for k in options["speaker_by_assname"].keys():
             ar_k = str(k).split("|")
             if core.cur_callname in ar_k:
                 speaker = options["speaker_by_assname"][k]
 
     # рендерим wav
-    path = core.model.save_wav(text=text_to_speech,
-                               speaker=speaker,
-                               put_accent=options["put_accent"],
-                               put_yo=options["put_yo"],
-                               sample_rate=options["sample_rate"])
+    import torch
+    with torch.inference_mode():
+        path = core.model.save_wav(text=text_to_speech,
+                                   speaker=speaker,
+                                   put_accent=options["put_accent"],
+                                   put_yo=options["put_yo"],
+                                   sample_rate=options["sample_rate"])
 
     # перемещаем wav на новое место
     if os.path.exists(wavfile):
         os.unlink(wavfile)
-    os.rename(path,wavfile)
+    import shutil
+    shutil.move(path, wavfile)  # rename не работает между разными файловыми системами
