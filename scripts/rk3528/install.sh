@@ -28,7 +28,7 @@ if [ "$(id -u)" -eq 0 ]; then
 fi
 
 echo "==> Системные пакеты"
-PKGS="mpv socat alsa-utils libportaudio2 libsndfile1 pipewire pipewire-pulse pipewire-alsa wireplumber pulseaudio-utils"
+PKGS="python3-venv mpv socat alsa-utils libportaudio2 libsndfile1 pipewire pipewire-pulse pipewire-alsa wireplumber pulseaudio-utils"
 [ $WITH_AIRPLAY = 1 ] && PKGS="$PKGS shairport-sync avahi-daemon"
 [ $WITH_DLNA = 1 ] && PKGS="$PKGS gmediarender gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-pulseaudio"
 [ $WITH_BT = 1 ] && PKGS="$PKGS bluez bluez-tools libspa-0.2-bluetooth"
@@ -60,7 +60,13 @@ fi
 echo "==> Python-окружение ($PYTHON)"
 "$PYTHON" -c "import ssl, ctypes, sqlite3" || {
   echo "Ваш $PYTHON собран без ssl/ctypes. Пересоберите с libssl-dev libffi-dev libsqlite3-dev"; exit 1; }
-[ -d "$REPO/.venv" ] || "$PYTHON" -m venv "$REPO/.venv"
+if [ ! -x "$REPO/.venv/bin/pip" ]; then
+  rm -rf "$REPO/.venv"   # недоделанное окружение (например, без python3-venv) — создаём заново
+  "$PYTHON" -m venv "$REPO/.venv" || {
+    echo "!! Не удалось создать venv. Для системного Python: sudo apt install python3-venv"
+    echo "!! Для собранного из исходников: при сборке нужен модуль ensurepip (configure --with-ensurepip=install)"
+    exit 1; }
+fi
 "$REPO/.venv/bin/pip" install --upgrade pip wheel
 "$REPO/.venv/bin/pip" install -r "$REPO/requirements-rk3528.txt"
 
