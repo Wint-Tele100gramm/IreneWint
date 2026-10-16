@@ -189,8 +189,11 @@ class RoomServer:
         self.asr = create_backend(options)
         logger.warning(f"Распознавание речи: {self.asr.name}")
 
+        logger.warning("Загружаю плагины и модель голоса. Если модели vosk-tts ещё нет, она скачивается (~130 МБ) "
+                       "— быстрее и с прогрессом: bash scripts/rk3528/get_tts_model.sh")
         self.core = VACore()
         self.core.init_with_plugins()
+        logger.warning("Модель голоса загружена")
         self.core.current_room = None
         self.core.rooms_server = self
         self._install_tts_router()

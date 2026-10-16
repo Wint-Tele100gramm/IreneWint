@@ -137,6 +137,11 @@ if [ "$ASR" = sherpa ] && [ ! -s "$REPO/model-sherpa/tokens.txt" ] && [ ! -s "$R
   bash "$SCRIPTS/get_asr_model.sh" small || echo "!! Не скачалась — Ирина будет работать на старой модели Vosk из папки model"
 fi
 
+if grep -q '"ttsEngineId": *"vosk"' "$REPO/options/core.json" 2>/dev/null; then
+  echo "==> Модель голоса vosk-tts"
+  bash "$SCRIPTS/get_tts_model.sh" || echo "!! Модель голоса не скачалась — повторите: bash $SCRIPTS/get_tts_model.sh"
+fi
+
 if [ $LITE = 1 ]; then
   echo "==> zram: сжатая подкачка в памяти (без неё при 1 ГБ систему может прибить OOM)"
   if swapon --show=NAME --noheadings 2>/dev/null | grep -q zram; then
