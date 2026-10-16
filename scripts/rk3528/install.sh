@@ -4,6 +4,9 @@
 #     bash scripts/rk3528/install.sh            # всё: Ирина, AirPlay, Bluetooth, DLNA
 #     bash scripts/rk3528/install.sh --no-bt    # без Bluetooth
 #     bash scripts/rk3528/install.sh --aec      # + эхоподавление PipeWire (опционально)
+#     bash scripts/rk3528/install.sh --lite     # приставка с 1 ГБ ОЗУ: без DLNA и Bluetooth, zram, жёсткий лимит памяти
+#                                               (включается сам, если ОЗУ меньше 1,5 ГБ; --full — отключить)
+#     bash scripts/rk3528/install.sh --asr kaldi  # старое распознавание Vosk вместо новой потоковой модели
 #
 # Переменные: PYTHON=/usr/local/bin/python3.13 (по умолчанию python3.13 из PATH)
 
@@ -12,26 +15,37 @@ set -euo pipefail
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 SCRIPTS="$REPO/scripts/rk3528"
 PYTHON="${PYTHON:-python3.13}"
-WITH_BT=1; WITH_AIRPLAY=1; WITH_DLNA=1; WITH_AEC=0
-for a in "$@"; do
-  case "$a" in
+WITH_BT=1; WITH_AIRPLAY=1; WITH_DLNA=1; WITH_AEC=0; ASR=sherpa
+MEM_MB=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)
+LITE=0; [ "$MEM_MB" -lt 1500 ] && LITE=1
+while [ $# -gt 0 ]; do
+  case "$1" in
     --no-bt) WITH_BT=0 ;;
     --no-airplay) WITH_AIRPLAY=0 ;;
     --no-dlna) WITH_DLNA=0 ;;
     --aec) WITH_AEC=1 ;;
-    *) echo "Неизвестный параметр $a"; exit 1 ;;
+    --lite) LITE=1 ;;
+    --full) LITE=0 ;;
+    --asr) ASR="$2"; shift ;;
+    *) echo "Неизвестный параметр $1"; exit 1 ;;
   esac
+  shift
 done
+if [ $LITE = 1 ]; then
+  echo "==> Облегчённый режим (ОЗУ ${MEM_MB} МБ): без DLNA и Bluetooth, zram, лимит памяти Ирины 800 МБ"
+  WITH_BT=0; WITH_DLNA=0
+fi
 
 if [ "$(id -u)" -eq 0 ]; then
   echo "Запустите от обычного пользователя (sudo будет вызван сам)"; exit 1
 fi
 
 echo "==> Системные пакеты"
-PKGS="python3-venv mpv socat alsa-utils libportaudio2 libsndfile1 pipewire pipewire-pulse pipewire-alsa wireplumber pulseaudio-utils"
+PKGS="python3-venv bzip2 mpv socat alsa-utils libportaudio2 libsndfile1 pipewire pipewire-pulse pipewire-alsa wireplumber pulseaudio-utils"
 [ $WITH_AIRPLAY = 1 ] && PKGS="$PKGS shairport-sync avahi-daemon"
 [ $WITH_DLNA = 1 ] && PKGS="$PKGS gmediarender gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-pulseaudio"
 [ $WITH_BT = 1 ] && PKGS="$PKGS bluez bluez-tools libspa-0.2-bluetooth"
+[ $LITE = 1 ] && PKGS="$PKGS zram-tools"
 sudo apt-get update || echo "!! apt-get update завершился с ошибкой — проверьте зеркала в /etc/apt/sources.list*"
 # ставим только те пакеты, что есть в репозиториях: иначе apt откажется ставить и все остальные
 AVAILABLE=""; MISSING=""
@@ -102,6 +116,9 @@ if [ ! -e "$REPO/runva_rooms.json" ]; then
     "host": "0.0.0.0",
     "port": 8765,
     "token": "$ROOMS_TOKEN",
+    "asr": "$ASR",
+    "sherpa_model": "model-sherpa",
+    "asr_threads": 2,
     "model": "model",
     "local_room": "",
     "local_device": null,
@@ -114,6 +131,19 @@ JSON
   chmod 600 "$REPO/runva_rooms.json"
 fi
 ROOMS_TOKEN="$("$REPO/.venv/bin/python" -c "import json; print(json.load(open('$REPO/runva_rooms.json'))['token'])")"
+
+if [ "$ASR" = sherpa ] && [ ! -s "$REPO/model-sherpa/tokens.txt" ] && [ ! -s "$REPO/model-sherpa/lang/tokens.txt" ]; then
+  echo "==> Модель распознавания речи (потоковая Vosk, малая int8)"
+  bash "$SCRIPTS/get_asr_model.sh" small || echo "!! Не скачалась — Ирина будет работать на старой модели Vosk из папки model"
+fi
+
+if [ $LITE = 1 ]; then
+  echo "==> zram: сжатая подкачка в памяти (без неё при 1 ГБ систему может прибить OOM)"
+  printf 'ALGO=zstd\nPERCENT=60\nPRIORITY=100\n' | sudo tee /etc/default/zramswap >/dev/null
+  sudo systemctl enable zramswap >/dev/null 2>&1 || true
+  sudo systemctl restart zramswap || echo "!! zramswap не запустился: journalctl -u zramswap"
+  # если в Armbian уже есть своя zram-подкачка (armbian-zram-config) — она тоже подойдёт
+fi
 
 echo "==> Звук: PipeWire в пользовательской сессии (работает и без входа в систему)"
 sudo loginctl enable-linger "$USER"
@@ -167,6 +197,9 @@ fi
 
 echo "==> Сервис Ирины"
 sed "$UNIT_SED" "$SCRIPTS/irene.service" > ~/.config/systemd/user/irene.service
+if [ $LITE = 1 ]; then
+  sed -i 's/^MemoryHigh=.*/MemoryHigh=650M/; s/^MemoryMax=.*/MemoryMax=800M/' ~/.config/systemd/user/irene.service
+fi
 chmod +x "$SCRIPTS"/*.sh
 systemctl --user daemon-reload
 UNITS="irene"

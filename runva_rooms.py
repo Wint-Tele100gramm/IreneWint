@@ -39,7 +39,10 @@ DEFAULT_OPTIONS = {
     "host": "0.0.0.0",
     "port": 8765,
     "token": "",                 # общий ключ для клиентов; пустой — без проверки (не рекомендуется)
-    "model": "model",            # путь к модели Vosk
+    "asr": "sherpa",             # распознавание: "sherpa" (новая потоковая модель Vosk) или "kaldi" (старая, папка model)
+    "sherpa_model": "model-sherpa",  # папка потоковой модели Vosk для sherpa-onnx
+    "asr_threads": 2,            # потоков на распознавание (sherpa)
+    "model": "model",            # путь к модели Vosk для "kaldi"
     "local_room": "",            # имя комнаты для микрофона/динамика самой приставки ("" — выключено)
     "local_device": None,        # устройство ввода sounddevice (None — по умолчанию)
     "arbitration_ms": 450,       # окно, в котором одна фраза из нескольких комнат считается одной командой
@@ -94,8 +97,8 @@ class Room:
 
     # --- распознавание (отдельный поток на комнату; Vosk отпускает GIL) ---
     def _recognize_loop(self):
-        from vosk import KaldiRecognizer
-        rec = KaldiRecognizer(self.server.model, 16000)
+        # у клиентов ESP32 конец фразы определяет их VAD, у микрофона приставки — сам распознаватель
+        rec = self.server.asr.session(endpointing=self.local)
         max_bytes = int(self.server.options["max_segment_sec"] * 16000 * 2)
         seg_bytes = 0
         parts = []   # у клиентов с VAD фраза собирается целиком до конца сегмента
@@ -104,7 +107,7 @@ class Room:
             if item is None:
                 return
             if item == "END" or seg_bytes > max_bytes:
-                text = json.loads(rec.FinalResult()).get("text", "")
+                text = rec.finish()
                 parts.append(text)
                 full = " ".join(p for p in parts if p)
                 parts, seg_bytes, self.wake_sent = [], 0, False
@@ -114,8 +117,9 @@ class Room:
                     continue
             if isinstance(item, bytes):
                 seg_bytes += len(item)
-                if rec.AcceptWaveform(item):
-                    text = json.loads(rec.Result()).get("text", "")
+                text, partial = rec.accept(item)
+                if text is not None:
+                    seg_bytes = 0 if self.local else seg_bytes
                     if self.local:
                         self.wake_sent = False
                         if text:
@@ -123,7 +127,6 @@ class Room:
                     elif text:
                         parts.append(text)
                 else:
-                    partial = json.loads(rec.PartialResult()).get("partial", "")
                     if partial and not self.wake_sent and self.server.has_name(partial):
                         self.wake_sent = True
                         self.send_json({"type": "wake"})
@@ -182,9 +185,9 @@ class RoomServer:
         self.pending_lock = threading.Lock()
         self.context_room = None
 
-        import vosk
-        vosk.SetLogLevel(-1)
-        self.model = vosk.Model(options["model"])
+        from utils.asr_backends import create_backend
+        self.asr = create_backend(options)
+        logger.warning(f"Распознавание речи: {self.asr.name}")
 
         self.core = VACore()
         self.core.init_with_plugins()

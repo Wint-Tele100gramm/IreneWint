@@ -33,6 +33,11 @@ PYEOF
 
 case "$ENGINE" in
   silero)
+    MEM_MB=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)
+    if [ "$MEM_MB" -lt 1500 ]; then
+      echo "!! На приставке ${MEM_MB} МБ ОЗУ — Silero (PyTorch) не поместится вместе с распознаванием. Оставляю vosk-tts."
+      exit 1
+    fi
     echo "==> PyTorch (CPU) — около 200 МБ загрузки, может занять время"
     if ! "$PY" -c "import torch" 2>/dev/null; then
       # сначала официальный CPU-индекс PyTorch (без CUDA), если он недоступен — PyPI
