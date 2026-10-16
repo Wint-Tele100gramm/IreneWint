@@ -212,6 +212,10 @@ UNITS="irene"
 [ $WITH_DLNA = 1 ] && UNITS="$UNITS irene-dlna"
 # shellcheck disable=SC2086
 systemctl --user enable $UNITS
+# при повторной установке перезапускаем уже работающие сервисы, чтобы подхватить новый код
+for u in $UNITS; do
+  systemctl --user is-active --quiet "$u" && systemctl --user restart "$u" && echo "    перезапущен $u"
+done
 
 cat <<EOF
 
