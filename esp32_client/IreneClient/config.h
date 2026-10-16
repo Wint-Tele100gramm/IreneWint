@@ -47,4 +47,4 @@
 #define DEFAULT_SERVER   "irene.local"
 #define DEFAULT_PORT     8765
 #define DEFAULT_VOLUME   70
-#define FW_VERSION       "1.0"
+#define FW_VERSION       "1.1"

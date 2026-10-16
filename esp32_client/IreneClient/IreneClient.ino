@@ -123,25 +123,46 @@ void saveVolume() {
   prefs.end();
 }
 
-// ---------------- Wi-Fi и портал настройки ----------------
-bool portalSaved = false;
+// ---------------- Wi-Fi и страница настройки ----------------
+// Первый запуск: точка доступа "Irene-XXXXXX", страница настройки на 192.168.4.1.
+// После подключения к домашней сети та же страница доступна по IP клиента (http://<IP>/ -> "Setup").
+WiFiManager wm;
+WiFiManagerParameter *pServer, *pPort, *pRoom, *pName, *pToken;
+char portStr[8];
+volatile bool portalSaved = false;      // сохранили настройки при первой настройке (AP)
+volatile bool liveSaved = false;        // сохранили настройки на странице в домашней сети
+
+void applyParams() {
+  cfg.server = pServer->getValue();
+  cfg.port = (uint16_t)atoi(pPort->getValue());
+  if (cfg.port == 0) cfg.port = DEFAULT_PORT;
+  cfg.roomId = pRoom->getValue();
+  cfg.roomName = pName->getValue();
+  String token = pToken->getValue();
+  cfg.server.trim(); cfg.roomId.trim(); cfg.roomName.trim(); token.trim();
+  if (token.length()) cfg.token = token;     // пустое поле — ключ не меняем
+  if (cfg.roomId.isEmpty()) cfg.roomId = defaultRoomId();
+  if (cfg.roomName.isEmpty()) cfg.roomName = cfg.roomId;
+  saveSettings();
+}
 
 void setupWifi() {
-  WiFiManager wm;
-  char portStr[8];
   snprintf(portStr, sizeof(portStr), "%u", cfg.port);
-  WiFiManagerParameter pServer("server", "Адрес сервера Ирины (IP или имя.local)", cfg.server.c_str(), 64);
-  WiFiManagerParameter pPort("port", "Порт", portStr, 6);
-  WiFiManagerParameter pRoom("room", "ID комнаты латиницей (kitchen)", cfg.roomId.c_str(), 32);
-  WiFiManagerParameter pName("name", "Название комнаты как в Home Assistant (Кухня)", cfg.roomName.c_str(), 64);
-  WiFiManagerParameter pToken("token", "Ключ (token из runva_rooms.json)", cfg.token.c_str(), 64);
-  wm.addParameter(&pServer);
-  wm.addParameter(&pPort);
-  wm.addParameter(&pRoom);
-  wm.addParameter(&pName);
-  wm.addParameter(&pToken);
+  pServer = new WiFiManagerParameter("server", "Адрес сервера Ирины (IP приставки)", cfg.server.c_str(), 64);
+  pPort = new WiFiManagerParameter("port", "Порт", portStr, 6);
+  pRoom = new WiFiManagerParameter("room", "ID комнаты латиницей (kitchen)", cfg.roomId.c_str(), 32);
+  pName = new WiFiManagerParameter("name", "Название комнаты как в Home Assistant (Кухня)", cfg.roomName.c_str(), 64);
+  // ключ не показываем на странице: пустое поле при сохранении оставляет прежний
+  pToken = new WiFiManagerParameter("token", cfg.token.length() ? "Ключ (оставьте пустым, чтобы не менять)"
+                                                                 : "Ключ (token из runva_rooms.json)", "", 64);
+  wm.addParameter(pServer);
+  wm.addParameter(pPort);
+  wm.addParameter(pRoom);
+  wm.addParameter(pName);
+  wm.addParameter(pToken);
   wm.setSaveConfigCallback([]() { portalSaved = true; });
-  wm.setSaveParamsCallback([]() { portalSaved = true; });
+  wm.setSaveParamsCallback([]() { if (WiFi.status() == WL_CONNECTED && !wm.getConfigPortalActive()) liveSaved = true;
+                                  else portalSaved = true; });
   wm.setTitle("Ирина");
   wm.setConfigPortalTimeout(300);
   wm.setConnectTimeout(20);
@@ -154,21 +175,29 @@ void setupWifi() {
     ESP.restart();
   }
   led(false);
+  if (portalSaved) applyParams();
 
-  if (portalSaved) {
-    cfg.server = pServer.getValue();
-    cfg.port = (uint16_t)atoi(pPort.getValue());
-    if (cfg.port == 0) cfg.port = DEFAULT_PORT;
-    cfg.roomId = pRoom.getValue();
-    cfg.roomName = pName.getValue();
-    cfg.token = pToken.getValue();
-    cfg.server.trim(); cfg.roomId.trim(); cfg.roomName.trim(); cfg.token.trim();
-    if (cfg.roomId.isEmpty()) cfg.roomId = defaultRoomId();
-    if (cfg.roomName.isEmpty()) cfg.roomName = cfg.roomId;
-    saveSettings();
-  }
   WiFi.setSleep(false);   // меньше задержка и пропуски звука
   Serial.printf("Wi-Fi: %s, IP %s\n", WiFi.SSID().c_str(), WiFi.localIP().toString().c_str());
+
+  // страница настройки в домашней сети: отдельная страница "Setup" с параметрами
+  static const char* menu[] = {"param", "wifi", "info", "restart"};
+  wm.setParamsPage(true);
+  wm.setMenu(menu, 4);
+  wm.setConfigPortalBlocking(false);
+  wm.startWebPortal();
+  Serial.printf("Настройки клиента: http://%s/  (кнопка Setup)\n", WiFi.localIP().toString().c_str());
+}
+
+void handleWebPortal() {
+  wm.process();
+  if (liveSaved) {
+    liveSaved = false;
+    applyParams();
+    Serial.println("Настройки сохранены, перезагрузка");
+    delay(500);
+    ESP.restart();
+  }
 }
 
 void checkResetButton() {
@@ -504,6 +533,7 @@ void setup() {
 void loop() {
   ws.loop();
   ArduinoOTA.handle();
+  handleWebPortal();
   checkResetButton();
   processMic();      // блокируется на ~20 мс, пока не накопится кадр — это и есть ритм цикла
   static uint32_t wifiLostAt = 0;     // если Wi-Fi не вернулся за минуту — перезагрузка
