@@ -30,7 +30,21 @@ def init(core:VACore):
 
 def playwav(core:VACore, wavfile:str):
     # список аргументов, а не строка через shell: в именах файлов кэша озвучки есть пробелы и "!"
-    subprocess.call(["aplay", "-q", wavfile])
+    # процесс сохраняем в core, чтобы ответ можно было прервать голосом ("стоп") — см. stop_playback()
+    proc = subprocess.Popen(["aplay", "-q", wavfile])
+    core.current_playback = proc
+    try:
+        proc.wait()
+    finally:
+        core.current_playback = None
+
+
+def stop_playback(core:VACore):
+    proc = getattr(core, "current_playback", None)
+    if proc is not None and proc.poll() is None:
+        proc.terminate()
+        return True
+    return False
     #AudioPlayer(wavfile).play(block=True)
     return
 

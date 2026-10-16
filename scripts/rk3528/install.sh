@@ -162,12 +162,7 @@ export XDG_RUNTIME_DIR="/run/user/$(id -u)"
 systemctl --user enable --now pipewire pipewire-pulse wireplumber || true
 
 if [ $WITH_AEC = 1 ]; then
-  mkdir -p ~/.config/pipewire/pipewire.conf.d
-  cp "$SCRIPTS/50-irene-aec.conf" ~/.config/pipewire/pipewire.conf.d/
-  systemctl --user restart pipewire pipewire-pulse wireplumber
-  sleep 2
-  pactl set-default-sink irene_aec_sink || true
-  pactl set-default-source irene_aec_source || true
+  echo "==> Эхоподавление: включится после установки — bash $SCRIPTS/enable_aec.sh"
 fi
 
 mkdir -p ~/.config/systemd/user ~/.config/irene

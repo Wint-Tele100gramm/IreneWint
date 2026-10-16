@@ -48,7 +48,9 @@ DEFAULT_OPTIONS = {
     "arbitration_ms": 450,       # окно, в котором одна фраза из нескольких комнат считается одной командой
     "max_segment_sec": 12,       # максимальная длина одной фразы от клиента
     "default_volume": 70,        # громкость ответов на клиентах по умолчанию
-    "log_heard": False,          # писать в лог все распознанные фразы, даже без имени помощника (для проверки микрофона)
+    "log_heard": False,
+    "barge_in": False,           # микрофон приставки слушает и во время ответа Ирины (нужно эхоподавление:
+                                 # bash scripts/rk3528/enable_aec.sh) — ответ можно прервать словом "стоп"          # писать в лог все распознанные фразы, даже без имени помощника (для проверки микрофона)
     "tts_chunk_bytes": 4096,
 }
 
@@ -81,7 +83,8 @@ class Room:
 
     # --- приём звука (вызывается из asyncio) ---
     def feed(self, pcm: bytes):
-        if self.speaking or time.time() < self.mute_until:
+        barge_in = self.local and self.server.options.get("barge_in")
+        if not barge_in and (self.speaking or time.time() < self.mute_until):
             return
         try:
             self.audio_q.put_nowait(pcm)
@@ -128,12 +131,17 @@ class Room:
                     elif text:
                         parts.append(text)
                 else:
+                    if self.speaking and partial and self.server.is_stop_phrase(partial):
+                        self.server.interrupt(self, partial)
                     if partial and not self.wake_sent and self.server.has_name(partial):
                         self.wake_sent = True
                         self.send_json({"type": "wake"})
                         self.server.on_wake(self, partial)
 
     def _phrase(self, text):
+        if self.speaking and self.server.is_stop_phrase(text) and not self.server.has_name(text):
+            self.server.interrupt(self, text)   # "стоп" во время ответа — просто замолчать
+            return
         words = text.split()
         names = self.server.core.voiceAssNames
         if words and all(w in names for w in words):
@@ -213,7 +221,27 @@ class RoomServer:
             return fut.result(timeout)
         return fut
 
+    STOP_WORDS = ("стоп", "хватит", "замолчи", "помолчи", "перестань", "тихо", "заткнись", "отмена")
+
+    def is_stop_phrase(self, text: str) -> bool:
+        words = text.split()
+        return any(w in self.STOP_WORDS for w in words[-3:])
+
+    def interrupt(self, room, heard=""):
+        """Прервать ответ Ирины в комнате (только приставка: ESP32 не слушает, пока говорит)."""
+        if not (room.local and room.speaking):
+            return
+        try:
+            import plugins.plugin_playwav_aplay as aplay_plugin
+            if aplay_plugin.stop_playback(self.core):
+                logger.warning(f"{room.name}: ответ прерван («{heard}»)")
+        except Exception as e:
+            logger.debug(e)
+
     def on_wake(self, room, partial):
+        # "Ирина, ..." во время ответа — замолкаем и слушаем новую команду
+        if room.local and room.speaking and self.options.get("barge_in"):
+            self.interrupt(room, partial)
         # приглушить музыку на приставке, если имя прозвучало в комнате с приставкой
         if room.local and hasattr(self.core, "on_partial"):
             try:
