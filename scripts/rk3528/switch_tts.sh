@@ -78,4 +78,4 @@ esac
 
 echo "==> Перезапуск Ирины"
 systemctl --user restart irene
-echo "Готово. Первый запуск с новым голосом — до минуты. Лог: journalctl --user -u irene -f"
+echo "Готово. Первый запуск с новым голосом — до минуты. Лог: journalctl --user-unit irene -f"

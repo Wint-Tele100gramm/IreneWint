@@ -115,7 +115,7 @@ bash scripts/rk3528/switch_tts.sh vosk     # вернуть vosk-tts
 ```bash
 systemctl --user start irene irene-airplay irene-dlna
 systemctl --user restart irene
-journalctl --user -u irene -f
+journalctl --user-unit irene -f
 ```
 
 ## Память (ориентировочно)

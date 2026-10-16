@@ -223,7 +223,7 @@ cat <<EOF
      ключ: $ROOMS_TOKEN
      Микрофон самой приставки как комната: "local_room": "Гостиная" в $REPO/runva_rooms.json
   4. Запуск:          systemctl --user start $UNITS
-     Логи:            journalctl --user -u irene -f
+     Логи:            journalctl --user-unit irene -f
   5. Проверьте микрофон: arecord -l   и   pactl list short sources
 
 Перезайдите по SSH, чтобы применились группы audio/bluetooth.

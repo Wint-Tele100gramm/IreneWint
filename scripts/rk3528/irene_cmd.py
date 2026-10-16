@@ -58,7 +58,7 @@ async def main():
                 elif t == "idle":
                     break
         except asyncio.TimeoutError:
-            sys.exit("Ирина не ответила за 60 секунд — смотрите journalctl --user -u irene -f")
+            sys.exit("Ирина не ответила за 60 секунд — смотрите journalctl --user-unit irene -f")
     print("Готово")
 
 
