@@ -29,7 +29,8 @@ def init(core:VACore):
     pass
 
 def playwav(core:VACore, wavfile:str):
-    subprocess.call("aplay "+wavfile, shell=True)
+    # список аргументов, а не строка через shell: в именах файлов кэша озвучки есть пробелы и "!"
+    subprocess.call(["aplay", "-q", wavfile])
     #AudioPlayer(wavfile).play(block=True)
     return
 
