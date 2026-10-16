@@ -48,6 +48,7 @@ DEFAULT_OPTIONS = {
     "arbitration_ms": 450,       # окно, в котором одна фраза из нескольких комнат считается одной командой
     "max_segment_sec": 12,       # максимальная длина одной фразы от клиента
     "default_volume": 70,        # громкость ответов на клиентах по умолчанию
+    "log_heard": False,          # писать в лог все распознанные фразы, даже без имени помощника (для проверки микрофона)
     "tts_chunk_bytes": 4096,
 }
 
@@ -225,8 +226,8 @@ class RoomServer:
         in_context = self.core.context is not None
         if in_context or self.has_name(text):
             logger.info(f"{room.name}: «{text}» (уровень {room.level})")
-        else:
-            logger.debug(f"{room.name}: без имени помощника, пропускаю «{text}»")
+        elif self.options.get("log_heard"):
+            logger.info(f"{room.name}: услышала «{text}» (без имени — не команда)")
         if in_context:
             # в режиме контекста (игра, диалог) слушаем только комнату, где он начался
             if self.context_room is None or room is self.context_room:
@@ -421,11 +422,18 @@ class RoomServer:
             room.feed(pcm)
 
         def run():
-            with sd.RawInputStream(samplerate=16000, blocksize=4000, device=self.options.get("local_device"),
-                                   dtype="int16", channels=1, callback=callback):
-                print(f"Локальный микрофон слушает как комната «{name}»")
-                while True:
-                    time.sleep(1)
+            try:
+                with sd.RawInputStream(samplerate=16000, blocksize=4000, device=self.options.get("local_device"),
+                                       dtype="int16", channels=1, callback=callback):
+                    logger.warning(f"Локальный микрофон слушает как комната «{name}» "
+                                   f"(устройство: {sd.query_devices(self.options.get('local_device'), 'input')['name']})")
+                    while True:
+                        time.sleep(1)
+            except Exception as e:
+                logger.error(f"Не удалось открыть микрофон приставки: {e}. Устройства ввода:\n"
+                             + "\n".join(f"  {i}: {d['name']}" for i, d in enumerate(sd.query_devices())
+                                          if d["max_input_channels"] > 0)
+                             + "\nУкажите номер или часть имени в runva_rooms.json -> \"local_device\"")
 
         threading.Thread(target=run, name="local-mic", daemon=True).start()
 
