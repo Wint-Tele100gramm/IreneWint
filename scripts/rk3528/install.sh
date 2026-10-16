@@ -139,10 +139,15 @@ fi
 
 if [ $LITE = 1 ]; then
   echo "==> zram: сжатая подкачка в памяти (без неё при 1 ГБ систему может прибить OOM)"
-  printf 'ALGO=zstd\nPERCENT=60\nPRIORITY=100\n' | sudo tee /etc/default/zramswap >/dev/null
-  sudo systemctl enable zramswap >/dev/null 2>&1 || true
-  sudo systemctl restart zramswap || echo "!! zramswap не запустился: journalctl -u zramswap"
-  # если в Armbian уже есть своя zram-подкачка (armbian-zram-config) — она тоже подойдёт
+  if swapon --show=NAME --noheadings 2>/dev/null | grep -q zram; then
+    # в Armbian zram-подкачку обычно уже включает armbian-zram-config — второй zram не нужен
+    echo "    zram-подкачка уже работает: $(swapon --show=NAME,SIZE --noheadings | grep zram | tr -s ' ' | paste -sd ',')"
+    sudo systemctl disable --now zramswap >/dev/null 2>&1 || true
+  else
+    printf 'ALGO=zstd\nPERCENT=60\nPRIORITY=100\n' | sudo tee /etc/default/zramswap >/dev/null
+    sudo systemctl enable zramswap >/dev/null 2>&1 || true
+    sudo systemctl restart zramswap || echo "!! zramswap не запустился: journalctl -u zramswap -n 20"
+  fi
 fi
 
 echo "==> Звук: PipeWire в пользовательской сессии (работает и без входа в систему)"
