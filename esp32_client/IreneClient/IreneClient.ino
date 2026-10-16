@@ -4,6 +4,12 @@
 //  - настройка Wi-Fi, адреса сервера и имени комнаты — через портал WiFiManager
 //
 // Протокол описан в начале runva_rooms.py.
+//
+// Сборка в Arduino IDE (подробно — esp32_client/README.md):
+//   плата "ESP32 Dev Module" (или "ESP32S3 Dev Module"),
+//   Partition Scheme: "Minimal SPIFFS (1.9MB APP with OTA/190KB SPIFFS)",
+//   библиотеки: WiFiManager (tzapu), WebSockets (Markus Sattler), ArduinoJson (Benoit Blanchon).
+//   Работает с ядром esp32 2.0.x и 3.x (в 3.x будет предупреждение о старом драйвере I2S — это нормально).
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -15,7 +21,17 @@
 #include <ArduinoJson.h>
 #include <freertos/stream_buffer.h>
 #include "driver/i2s.h"
+#include "esp_idf_version.h"
 #include "config.h"
+
+// в ESP-IDF 5 (ядро Arduino 3.x) поля DMA переименованы, старые имена оставлены как устаревшие
+#if ESP_IDF_VERSION_MAJOR >= 5
+  #define I2S_DMA_COUNT dma_desc_num
+  #define I2S_DMA_LEN   dma_frame_num
+#else
+  #define I2S_DMA_COUNT dma_buf_count
+  #define I2S_DMA_LEN   dma_buf_len
+#endif
 
 #define MIC_PORT I2S_NUM_0
 #define AMP_PORT I2S_NUM_1
@@ -183,8 +199,8 @@ void setupMic() {
   c.channel_format = MIC_CHANNEL_FMT;
   c.communication_format = I2S_COMM_FORMAT_STAND_I2S;
   c.intr_alloc_flags = 0;
-  c.dma_buf_count = 8;
-  c.dma_buf_len = FRAME;
+  c.I2S_DMA_COUNT = 8;
+  c.I2S_DMA_LEN = FRAME;
   c.use_apll = false;
   ESP_ERROR_CHECK(i2s_driver_install(MIC_PORT, &c, 0, NULL));
   i2s_pin_config_t p = {};
@@ -204,8 +220,8 @@ void setupAmp() {
   c.channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT;   // моно дублируем в оба канала
   c.communication_format = I2S_COMM_FORMAT_STAND_I2S;
   c.intr_alloc_flags = 0;
-  c.dma_buf_count = 8;
-  c.dma_buf_len = 512;
+  c.I2S_DMA_COUNT = 8;
+  c.I2S_DMA_LEN = 512;
   c.use_apll = false;
   c.tx_desc_auto_clear = true;                     // при нехватке данных — тишина, а не треск
   ESP_ERROR_CHECK(i2s_driver_install(AMP_PORT, &c, 0, NULL));

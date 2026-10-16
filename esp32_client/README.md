@@ -31,21 +31,46 @@
 | WS | GPIO 25 | | DIN | GPIO 22 |
 | SD | GPIO 33 | | GAIN | не подключать (9 дБ) |
 
-Для ESP32-S3: микрофон SCK 4, WS 5, SD 6; усилитель BCLK 15, LRC 16, DIN 7. Пины меняются в `src/config.h`.
+Для ESP32-S3: микрофон SCK 4, WS 5, SD 6; усилитель BCLK 15, LRC 16, DIN 7. Пины меняются в `IreneClient/config.h`.
 
 Микрофон ставьте подальше от динамика и не направляйте на него — клиент не слушает, пока говорит сам,
 но чем меньше эха, тем лучше распознавание.
 
-## Прошивка
+## Прошивка в Arduino IDE
 
-Нужен [PlatformIO](https://platformio.org/install/cli) (или расширение PlatformIO для VS Code).
+1. **Ядро ESP32.** Arduino IDE → Инструменты → Плата → Менеджер плат → найдите **esp32** (Espressif Systems)
+   и установите. Подойдут версии 2.0.x и 3.x.
+2. **Библиотеки.** Скетч → Подключить библиотеку → Управлять библиотеками, установите:
+   - **WiFiManager** (автор tzapu);
+   - **WebSockets** (автор Markus Sattler);
+   - **ArduinoJson** (автор Benoit Blanchon), версия 7.
+3. **Откройте скетч** `esp32_client/IreneClient/IreneClient.ino` (папка и файл должны называться одинаково —
+   так и есть). Распиновка — во вкладке `config.h`.
+4. **Настройки в меню «Инструменты»:**
+
+   | | ESP32 DevKit | ESP32-S3 |
+   |---|---|---|
+   | Плата | ESP32 Dev Module | ESP32S3 Dev Module |
+   | Partition Scheme | Minimal SPIFFS (1.9MB APP with OTA/190KB SPIFFS) | то же |
+   | USB CDC On Boot | — | Enabled (чтобы видеть лог через USB) |
+
+   Partition Scheme важен: со стандартной схемой прошивка может не поместиться.
+5. Выберите порт, нажмите **Загрузить**. Откройте **Монитор порта** на скорости **115200**.
+
+Если в ядре 3.x появится предупреждение `legacy i2s driver is deprecated` — это нормально, прошивка работает.
+Если при запуске в мониторе будет ошибка `CONFLICT! ... legacy i2s driver` — поставьте ядро esp32 версии 2.0.17.
+
+Обновление по Wi-Fi: после первой прошивки клиент появится в «Инструменты → Порт» как сетевой порт
+`irene-<комната>`; пароль — ключ из настроек.
+
+<details><summary>PlatformIO (если появится)</summary>
 
 ```bash
 cd esp32_client
-pio run -e esp32dev -t upload      # ESP32 DevKit
-pio run -e esp32s3 -t upload       # ESP32-S3
-pio device monitor                 # лог
+pio run -e esp32dev -t upload      # или -e esp32s3
+pio device monitor
 ```
+</details>
 
 ## Настройка
 
@@ -78,7 +103,7 @@ pio device monitor                 # лог
 
 ## Настройка чувствительности
 
-В `src/config.h`:
+В `IreneClient/config.h`:
 
 | Параметр | Если… |
 |---|---|
