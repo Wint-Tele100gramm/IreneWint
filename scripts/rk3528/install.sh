@@ -67,17 +67,26 @@ if [ ! -x "$REPO/.venv/bin/pip" ]; then
     echo "!! Для собранного из исходников: при сборке нужен модуль ensurepip (configure --with-ensurepip=install)"
     exit 1; }
 fi
-# pip работает через SOCKS-прокси только с PySocks, а в новом venv его нет — ставим его в обход прокси
+# pip и SOCKS-прокси уживаются плохо (нужен PySocks, а в pip 26.x есть ошибка с SOCKS).
+# Если PyPI доступен напрямую — ставим пакеты в обход прокси, иначе через прокси с PySocks.
+PIP=("$REPO/.venv/bin/pip" --timeout 60 --retries 5)
+NOPROXY=(env -u ALL_PROXY -u all_proxy -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy)
 if env | grep -qiE '^(all|https?)_proxy=socks'; then
-  "$REPO/.venv/bin/python" -c "import socks" 2>/dev/null || \
-    env -u ALL_PROXY -u all_proxy -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy \
-      "$REPO/.venv/bin/pip" install pysocks || {
-    echo "!! Задан SOCKS-прокси, а PySocks без прокси не скачался."
-    echo "!! Положите пакет вручную: sudo apt install python3-socks && cp -r /usr/lib/python3/dist-packages/socks*.py $REPO/.venv/lib/python3*/site-packages/"
-    exit 1; }
+  if "${NOPROXY[@]}" curl -sS -o /dev/null --max-time 15 https://pypi.org/simple/pip/; then
+    echo "    PyPI доступен напрямую — ставлю пакеты без прокси"
+    PIP=("${NOPROXY[@]}" "${PIP[@]}")
+  else
+    echo "    PyPI доступен только через прокси — нужен PySocks"
+    "$REPO/.venv/bin/python" -c "import socks" 2>/dev/null || {
+      sudo apt-get install -y python3-socks
+      cp /usr/lib/python3/dist-packages/socks.py /usr/lib/python3/dist-packages/sockshandler.py \
+         "$("$REPO/.venv/bin/python" -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')/" 2>/dev/null || true
+    }
+  fi
 fi
-"$REPO/.venv/bin/pip" install --upgrade pip wheel
-"$REPO/.venv/bin/pip" install -r "$REPO/requirements-rk3528.txt"
+# pip не обновляем: версия из Debian работает, а в свежих бывают ошибки с прокси
+"${PIP[@]}" install wheel
+"${PIP[@]}" install -r "$REPO/requirements-rk3528.txt"
 
 echo "==> Настройки Ирины"
 mkdir -p "$REPO/options" "$REPO/temp"
