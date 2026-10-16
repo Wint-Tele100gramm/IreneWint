@@ -67,6 +67,15 @@ if [ ! -x "$REPO/.venv/bin/pip" ]; then
     echo "!! Для собранного из исходников: при сборке нужен модуль ensurepip (configure --with-ensurepip=install)"
     exit 1; }
 fi
+# pip работает через SOCKS-прокси только с PySocks, а в новом venv его нет — ставим его в обход прокси
+if env | grep -qiE '^(all|https?)_proxy=socks'; then
+  "$REPO/.venv/bin/python" -c "import socks" 2>/dev/null || \
+    env -u ALL_PROXY -u all_proxy -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy \
+      "$REPO/.venv/bin/pip" install pysocks || {
+    echo "!! Задан SOCKS-прокси, а PySocks без прокси не скачался."
+    echo "!! Положите пакет вручную: sudo apt install python3-socks && cp -r /usr/lib/python3/dist-packages/socks*.py $REPO/.venv/lib/python3*/site-packages/"
+    exit 1; }
+fi
 "$REPO/.venv/bin/pip" install --upgrade pip wheel
 "$REPO/.venv/bin/pip" install -r "$REPO/requirements-rk3528.txt"
 
