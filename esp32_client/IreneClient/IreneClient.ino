@@ -48,7 +48,11 @@ struct Settings {
   String roomId;
   String roomName;
   String token;
+  int micGainDb = DEFAULT_MIC_GAIN_DB;
+  int vadLevel = DEFAULT_VAD_LEVEL;
+  int hangMs = DEFAULT_VAD_HANG_MS;
 } cfg;
+float micGain = 4.0f;                    // линейное усиление из cfg.micGainDb
 
 Preferences prefs;
 WebSocketsClient ws;
@@ -104,7 +108,11 @@ void loadSettings() {
   cfg.roomName = prefs.getString("name", cfg.roomId);
   cfg.token = prefs.getString("token", "");
   volumePct = prefs.getUChar("volume", DEFAULT_VOLUME);
+  cfg.micGainDb = prefs.getInt("gain", DEFAULT_MIC_GAIN_DB);
+  cfg.vadLevel = prefs.getInt("vadlvl", DEFAULT_VAD_LEVEL);
+  cfg.hangMs = prefs.getInt("hang", DEFAULT_VAD_HANG_MS);
   prefs.end();
+  micGain = powf(10.0f, cfg.micGainDb / 20.0f);
 }
 
 void saveSettings() {
@@ -114,6 +122,9 @@ void saveSettings() {
   prefs.putString("room", cfg.roomId);
   prefs.putString("name", cfg.roomName);
   prefs.putString("token", cfg.token);
+  prefs.putInt("gain", cfg.micGainDb);
+  prefs.putInt("vadlvl", cfg.vadLevel);
+  prefs.putInt("hang", cfg.hangMs);
   prefs.end();
 }
 
@@ -127,8 +138,8 @@ void saveVolume() {
 // Первый запуск: точка доступа "Irene-XXXXXX", страница настройки на 192.168.4.1.
 // После подключения к домашней сети та же страница доступна по IP клиента (http://<IP>/ -> "Setup").
 WiFiManager wm;
-WiFiManagerParameter *pServer, *pPort, *pRoom, *pName, *pToken;
-char portStr[8];
+WiFiManagerParameter *pServer, *pPort, *pRoom, *pName, *pToken, *pGain, *pVad, *pHang;
+char portStr[8], gainStr[8], vadStr[8], hangStr[8];
 volatile bool portalSaved = false;      // сохранили настройки при первой настройке (AP)
 volatile bool liveSaved = false;        // сохранили настройки на странице в домашней сети
 
@@ -143,6 +154,9 @@ void applyParams() {
   if (token.length()) cfg.token = token;     // пустое поле — ключ не меняем
   if (cfg.roomId.isEmpty()) cfg.roomId = defaultRoomId();
   if (cfg.roomName.isEmpty()) cfg.roomName = cfg.roomId;
+  cfg.micGainDb = constrain(atoi(pGain->getValue()), 0, 30);
+  cfg.vadLevel = constrain(atoi(pVad->getValue()), 30, 5000);
+  cfg.hangMs = constrain(atoi(pHang->getValue()), 300, 3000);
   saveSettings();
 }
 
@@ -160,6 +174,15 @@ void setupWifi() {
   wm.addParameter(pRoom);
   wm.addParameter(pName);
   wm.addParameter(pToken);
+  snprintf(gainStr, sizeof(gainStr), "%d", cfg.micGainDb);
+  snprintf(vadStr, sizeof(vadStr), "%d", cfg.vadLevel);
+  snprintf(hangStr, sizeof(hangStr), "%d", cfg.hangMs);
+  pGain = new WiFiManagerParameter("gain", "Усиление микрофона, дБ (0-30; тихо/далеко — больше)", gainStr, 4);
+  pVad = new WiFiManagerParameter("vad", "Порог речи (30-5000; меньше — чувствительнее)", vadStr, 5);
+  pHang = new WiFiManagerParameter("hang", "Пауза конца фразы, мс (300-3000)", hangStr, 5);
+  wm.addParameter(pGain);
+  wm.addParameter(pVad);
+  wm.addParameter(pHang);
   wm.setSaveConfigCallback([]() { portalSaved = true; });
   wm.setSaveParamsCallback([]() { if (WiFi.status() == WL_CONNECTED && !wm.getConfigPortalActive()) liveSaved = true;
                                   else portalSaved = true; });
@@ -430,6 +453,9 @@ void endSpeech() {
   flushPacket();
   uint32_t level = levelCount ? (uint32_t)(levelSum / levelCount) : 0;
   if (wsConnected) sendVad(false, level);
+  // для настройки чувствительности: хорошая речь — уровень 1500–5000, шум — в разы меньше порога
+  Serial.printf("Фраза %.1f с: уровень речи %u, шум %.0f, порог %d, усиление %d дБ\n",
+                speechMs / 1000.0f, level, noiseFloor, cfg.vadLevel, cfg.micGainDb);
   inSpeech = false;
   loudFrames = 0;
   if (millis() > wakeUntil) led(false);
@@ -450,7 +476,7 @@ void processMic() {
   // 32 бита -> 16 бит, убираем постоянную составляющую, считаем уровень
   uint64_t sq = 0;
   for (int i = 0; i < FRAME; i++) {
-    float x = (float)(micRaw[i] >> MIC_SHIFT);
+    float x = (float)(micRaw[i] >> 8) * (micGain / 256.0f);   // 24 бита -> 16 бит с усилением
     float y = x - hpPrevX + 0.995f * hpPrevY;
     hpPrevX = x;
     hpPrevY = y;
@@ -465,6 +491,12 @@ void processMic() {
   if (!wsConnected) return;
 
   if (!inSpeech) {
+    static uint32_t lastNoiseLog = 0;
+    if (millis() - lastNoiseLog > 30000) {
+      lastNoiseLog = millis();
+      Serial.printf("Тишина: шум %.0f, речь начнётся с уровня %.0f\n", noiseFloor,
+                    max(noiseFloor * VAD_START_RATIO, (float)cfg.vadLevel));
+    }
     // фоновый шум медленно подстраивается
     if (rms < noiseFloor * 2.0f || noiseFloor < 50) noiseFloor = 0.97f * noiseFloor + 0.03f * rms;
     if (noiseFloor < 30) noiseFloor = 30;
@@ -473,7 +505,7 @@ void processMic() {
     prerollHead = (prerollHead + 1) % PREROLL_FRAMES;
     if (prerollCount < PREROLL_FRAMES) prerollCount++;
 
-    float threshold = max(noiseFloor * VAD_START_RATIO, (float)VAD_MIN_LEVEL);
+    float threshold = max(noiseFloor * VAD_START_RATIO, (float)cfg.vadLevel);
     loudFrames = (rms > threshold) ? loudFrames + 1 : 0;
     if (loudFrames >= VAD_START_FRAMES) {
       inSpeech = true;
@@ -496,9 +528,9 @@ void processMic() {
   speechMs += 20;
   levelSum += (uint32_t)rms;
   levelCount++;
-  if (rms < max(noiseFloor * 2.0f, (float)VAD_MIN_LEVEL * 0.6f)) silenceMs += 20;
+  if (rms < max(noiseFloor * 2.0f, (float)cfg.vadLevel * 0.6f)) silenceMs += 20;
   else silenceMs = 0;
-  uint32_t hang = (millis() < wakeUntil) ? VAD_HANG_WAKE_MS : VAD_HANG_MS;
+  uint32_t hang = (millis() < wakeUntil) ? cfg.hangMs * 2 : cfg.hangMs;
   if (silenceMs >= hang || speechMs >= VAD_MAX_MS) endSpeech();
 }
 

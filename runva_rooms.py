@@ -75,6 +75,7 @@ class Room:
         self.segment_started = 0.0
         self.wake_sent = False
         self.armed_until = 0.0
+        self.fragment = None                  # (текст, время) — короткий обрывок фразы без имени
         self.thread = threading.Thread(target=self._recognize_loop, name=f"asr-{room_id}", daemon=True)
         self.thread.start()
 
@@ -142,6 +143,17 @@ class Room:
         if self.speaking and self.server.is_stop_phrase(text) and not self.server.has_name(text):
             self.server.interrupt(self, text)   # "стоп" во время ответа — просто замолчать
             return
+        # тихо сказанное имя детектор речи клиента иногда режет надвое: «ири» + «на привет» -> «ирина привет»
+        now = time.time()
+        if self.fragment and now - self.fragment[1] < 2.5 and not self.server.has_name(text):
+            for joined in (self.fragment[0] + text, self.fragment[0] + " " + text):
+                if self.server.has_name(joined):
+                    logger.info(f"{self.name}: склеила «{self.fragment[0]}» + «{text}»")
+                    text = joined
+                    break
+        self.fragment = None
+        if not self.server.has_name(text) and len(text.split()) <= 3:
+            self.fragment = (text, now)
         words = text.split()
         names = self.server.core.voiceAssNames
         if words and all(w in names for w in words):
