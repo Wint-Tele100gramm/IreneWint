@@ -412,7 +412,15 @@ class RoomServer:
                 room.volume = max(0, min(100, hello["volume"]))
             self.rooms[room_id] = room
             await ws.send(json.dumps({"type": "welcome", "volume": room.volume}))
-            logger.warning(f"Подключилась комната «{name}» ({room_id}) с {ws.remote_address[0]}, прошивка {hello.get('fw')}")
+            extra = ""
+            if "rssi" in hello:
+                extra = f", Wi-Fi {hello['rssi']} дБм, запуск: {hello.get('reset', '?')}, обрывов Wi-Fi: {hello.get('drops', 0)}"
+            logger.warning(f"Подключилась комната «{name}» ({room_id}) с {ws.remote_address[0]}, "
+                           f"прошивка {hello.get('fw')}{extra}")
+            if isinstance(hello.get("rssi"), int) and hello["rssi"] < -75:
+                logger.warning(f"«{name}»: слабый сигнал Wi-Fi ({hello['rssi']} дБм) — возможны обрывы")
+            if "ПРОСАДКА" in str(hello.get("reset", "")):
+                logger.warning(f"«{name}»: клиент перезагрузился из-за просадки питания — проверьте блок питания")
 
             async for msg in ws:
                 if isinstance(msg, bytes):

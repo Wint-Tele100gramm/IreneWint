@@ -45,7 +45,12 @@
 #define VAD_MAX_MS        12000  // максимальная длина фразы
 #define MIC_MUTE_AFTER_TTS_MS 350 // не слушать микрофон сразу после ответа (эхо)
 
+// ---------------- Wi-Fi ----------------
+// Мощность передатчика. Если клиент перезагружается или теряет сеть, когда говорит (просадка питания) —
+// попробуйте WIFI_POWER_15dBm или WIFI_POWER_11dBm. Если далеко от роутера — WIFI_POWER_19_5dBm (максимум).
+#define WIFI_TX_POWER    WIFI_POWER_19_5dBm
+
 #define DEFAULT_SERVER   "irene.local"
 #define DEFAULT_PORT     8765
 #define DEFAULT_VOLUME   70
-#define FW_VERSION       "1.2"
+#define FW_VERSION       "1.3"

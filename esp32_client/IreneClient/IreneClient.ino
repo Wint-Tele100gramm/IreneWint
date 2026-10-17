@@ -22,6 +22,7 @@
 #include <freertos/stream_buffer.h>
 #include "driver/i2s.h"
 #include "esp_idf_version.h"
+#include "esp_system.h"
 #include "config.h"
 
 // в ESP-IDF 5 (ядро Arduino 3.x) поля DMA переименованы, старые имена оставлены как устаревшие
@@ -134,6 +135,45 @@ void saveVolume() {
   prefs.end();
 }
 
+// ---------------- диагностика Wi-Fi и питания ----------------
+volatile uint32_t wifiDrops = 0;          // сколько раз терялся Wi-Fi с момента включения
+volatile uint8_t lastDropReason = 0;      // код причины последнего обрыва (см. wifiReasonText)
+String resetReasonText;
+
+const char* wifiReasonText(uint8_t r) {
+  switch (r) {
+    case 2: case 15: case 204: return "истекло время авторизации (слабый сигнал или неверный пароль)";
+    case 4: case 200: return "роутер перестал видеть клиента (слабый сигнал/помехи)";
+    case 8: return "клиент сам отключился";
+    case 201: return "сеть не найдена";
+    case 202: case 203: return "ошибка авторизации";
+    case 34: case 205: return "роутер разорвал соединение";
+    default: return "другая причина";
+  }
+}
+
+String describeResetReason() {
+  switch (esp_reset_reason()) {
+    case ESP_RST_POWERON: return "включение питания";
+    case ESP_RST_BROWNOUT: return "ПРОСАДКА ПИТАНИЯ (brownout)";
+    case ESP_RST_PANIC: return "сбой прошивки";
+    case ESP_RST_INT_WDT: case ESP_RST_TASK_WDT: case ESP_RST_WDT: return "сторожевой таймер";
+    case ESP_RST_SW: return "перезагрузка программой";
+    default: return "другая";
+  }
+}
+
+void onWifiEvent(arduino_event_id_t event, arduino_event_info_t info) {
+  if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
+    wifiDrops++;
+    lastDropReason = info.wifi_sta_disconnected.reason;
+    Serial.printf("Wi-Fi потерян (%u-й раз): код %u — %s\n", wifiDrops, lastDropReason,
+                  wifiReasonText(lastDropReason));
+  } else if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
+    Serial.printf("Wi-Fi есть: IP %s, сигнал %d дБм\n", WiFi.localIP().toString().c_str(), WiFi.RSSI());
+  }
+}
+
 // ---------------- Wi-Fi и страница настройки ----------------
 // Первый запуск: точка доступа "Irene-XXXXXX", страница настройки на 192.168.4.1.
 // После подключения к домашней сети та же страница доступна по IP клиента (http://<IP>/ -> "Setup").
@@ -201,6 +241,12 @@ void setupWifi() {
   if (portalSaved) applyParams();
 
   WiFi.setSleep(false);   // меньше задержка и пропуски звука
+  WiFi.setAutoReconnect(true);
+  WiFi.setTxPower(WIFI_TX_POWER);
+  WiFi.onEvent(onWifiEvent);
+  int rssi = WiFi.RSSI();
+  Serial.printf("Сигнал Wi-Fi: %d дБм — %s\n", rssi, rssi > -60 ? "отличный" : rssi > -70 ? "нормальный" :
+                rssi > -78 ? "слабый, возможны обрывы" : "очень слабый — переставьте клиент или роутер");
   Serial.printf("Wi-Fi: %s, IP %s\n", WiFi.SSID().c_str(), WiFi.localIP().toString().c_str());
 
   // страница настройки в домашней сети: отдельная страница "Setup" с параметрами
@@ -347,6 +393,9 @@ void sendHello() {
   doc["rate"] = SAMPLE_RATE;
   doc["fw"] = FW_VERSION;
   doc["volume"] = (int)volumePct;
+  doc["rssi"] = WiFi.RSSI();                 // для лога сервера: качество связи и причина перезагрузки
+  doc["reset"] = resetReasonText;
+  doc["drops"] = (uint32_t)wifiDrops;
   String s;
   serializeJson(doc, s);
   ws.sendTXT(s);
@@ -494,8 +543,8 @@ void processMic() {
     static uint32_t lastNoiseLog = 0;
     if (millis() - lastNoiseLog > 30000) {
       lastNoiseLog = millis();
-      Serial.printf("Тишина: шум %.0f, речь начнётся с уровня %.0f\n", noiseFloor,
-                    max(noiseFloor * VAD_START_RATIO, (float)cfg.vadLevel));
+      Serial.printf("Тишина: шум %.0f, речь начнётся с уровня %.0f; Wi-Fi %d дБм, обрывов %u\n", noiseFloor,
+                    max(noiseFloor * VAD_START_RATIO, (float)cfg.vadLevel), WiFi.RSSI(), wifiDrops);
     }
     // фоновый шум медленно подстраивается
     if (rms < noiseFloor * 2.0f || noiseFloor < 50) noiseFloor = 0.97f * noiseFloor + 0.03f * rms;
@@ -544,6 +593,10 @@ void setup() {
   ampEnable(false);
   pinMode(RESET_BUTTON, INPUT_PULLUP);
 
+  resetReasonText = describeResetReason();
+  Serial.printf("Причина запуска: %s\n", resetReasonText.c_str());
+  if (esp_reset_reason() == ESP_RST_BROWNOUT)
+    Serial.println("!! Просела линия питания. Нужен блок питания 5 В от 1 А и конденсатор 470–1000 мкФ у усилителя");
   loadSettings();
   setupWifi();
 
@@ -568,10 +621,15 @@ void loop() {
   handleWebPortal();
   checkResetButton();
   processMic();      // блокируется на ~20 мс, пока не накопится кадр — это и есть ритм цикла
-  static uint32_t wifiLostAt = 0;     // если Wi-Fi не вернулся за минуту — перезагрузка
+  // Wi-Fi пропал: пробуем переподключиться каждые 5 с, через 2 минуты — перезагрузка
+  static uint32_t wifiLostAt = 0, lastReconnect = 0;
   if (WiFi.status() != WL_CONNECTED) {
     if (!wifiLostAt) wifiLostAt = millis();
-    if (millis() - wifiLostAt > 60000) ESP.restart();
+    if (millis() - lastReconnect > 5000) {
+      lastReconnect = millis();
+      WiFi.reconnect();
+    }
+    if (millis() - wifiLostAt > 120000) ESP.restart();
   } else {
     wifiLostAt = 0;
   }
