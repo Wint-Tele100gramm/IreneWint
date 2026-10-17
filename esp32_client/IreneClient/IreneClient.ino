@@ -610,7 +610,8 @@ void setup() {
   ArduinoOTA.onStart([]() { ws.disconnect(); });
   ArduinoOTA.begin();
 
-  audioBuf = xStreamBufferCreate(32 * 1024, 1);   // ~0,7 с при 22 кГц
+  audioBuf = xStreamBufferCreate(24 * 1024, 1);   // ~0,55 с при 22 кГц (сервер держит запас 0,3 с)
+  if (!audioBuf) Serial.println("!! Не хватило памяти под буфер звука");
   setupMic();
   setupAmp();
   xTaskCreatePinnedToCore(playerTask, "player", 4096, NULL, 5, NULL, 1);
