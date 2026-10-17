@@ -456,7 +456,10 @@ void onWsEvent(WStype_t type, uint8_t* payload, size_t length) {
     case WStype_BIN:
       if (playing) {
         // если буфер полон — ждём: TCP притормозит сервер, и звук не потеряется
-        xStreamBufferSend(audioBuf, payload, length, pdMS_TO_TICKS(2000));
+        // сервер шлёт звук в темпе воспроизведения, поэтому буфер не переполняется;
+        // долго не ждём, чтобы не перестать отвечать на пинги и не потерять соединение
+        if (xStreamBufferSend(audioBuf, payload, length, pdMS_TO_TICKS(100)) < length)
+          Serial.println("Буфер звука переполнен — кусок ответа пропущен");
       }
       break;
     default:
@@ -607,7 +610,7 @@ void setup() {
   ArduinoOTA.onStart([]() { ws.disconnect(); });
   ArduinoOTA.begin();
 
-  audioBuf = xStreamBufferCreate(24 * 1024, 1);
+  audioBuf = xStreamBufferCreate(32 * 1024, 1);   // ~0,7 с при 22 кГц
   setupMic();
   setupAmp();
   xTaskCreatePinnedToCore(playerTask, "player", 4096, NULL, 5, NULL, 1);

@@ -186,9 +186,18 @@ class Room:
             self.mute_until = time.time() + 0.4   # хвост эха в комнате
 
     async def _send_audio(self, rate, pcm):
+        # отдаём звук в темпе воспроизведения (с запасом 0,3 с впереди): буфер клиента невелик,
+        # а если его переполнить, клиент перестаёт обслуживать сеть и соединение рвётся
         chunk = self.server.options["tts_chunk_bytes"]
+        bytes_per_sec = rate * 2
+        lead = 0.3
         await self.ws.send(json.dumps({"type": "tts_start", "rate": rate}))
+        loop = asyncio.get_running_loop()
+        started = loop.time()
         for i in range(0, len(pcm), chunk):
+            ahead = i / bytes_per_sec - (loop.time() - started)
+            if ahead > lead:
+                await asyncio.sleep(ahead - lead)
             await self.ws.send(pcm[i:i + chunk])
         await self.ws.send(json.dumps({"type": "tts_end"}))
 
