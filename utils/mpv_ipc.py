@@ -1,4 +1,7 @@
-# Минимальный клиент mpv через JSON IPC (unix-сокет), без сторонних зависимостей.
+# Минимальный клиент mpv через JSON IPC, без сторонних зависимостей.
+# Linux: unix-сокет. Windows: именованный канал \\.\pipe\irene-mpv — в синхронном режиме Windows не даёт
+# одновременно читать и писать, поэтому там всё делается под одной блокировкой, а события mpv
+# (конец трека) забираются опросом раз в полсекунды.
 # mpv запускается один раз в режиме --idle и живёт, пока работает Ирина.
 
 import json
@@ -10,11 +13,12 @@ import time
 import logging
 
 logger = logging.getLogger(__name__)
+IS_WIN = os.name == "nt"
 
 
 class MpvPlayer:
-    def __init__(self, socket_path="/tmp/irene-mpv.sock", extra_args=None, on_event=None):
-        self.socket_path = socket_path
+    def __init__(self, socket_path=None, extra_args=None, on_event=None):
+        self.socket_path = socket_path or (r"\\.\pipe\irene-mpv" if IS_WIN else "/tmp/irene-mpv.sock")
         self.extra_args = extra_args or []
         self.on_event = on_event
         self._proc = None
@@ -28,7 +32,7 @@ class MpvPlayer:
     def start(self):
         if self._proc and self._proc.poll() is None and self._sock:
             return
-        if os.path.exists(self.socket_path):
+        if not IS_WIN and os.path.exists(self.socket_path):
             try:
                 os.remove(self.socket_path)
             except OSError:
@@ -37,8 +41,14 @@ class MpvPlayer:
                 "--input-ipc-server=" + self.socket_path, "--cache=yes",
                 "--demuxer-max-bytes=8MiB"] + self.extra_args
         logger.info("Запуск mpv: " + " ".join(args))
-        self._proc = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                      stderr=subprocess.DEVNULL)
+        try:
+            self._proc = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                          stderr=subprocess.DEVNULL)
+        except FileNotFoundError:
+            raise RuntimeError("Не найден mpv: " + ("положите mpv.exe в папку mpv рядом с Ириной"
+                                                   if IS_WIN else "sudo apt install mpv"))
+        if IS_WIN:
+            return self._start_windows()
         for _ in range(50):
             if os.path.exists(self.socket_path):
                 try:
@@ -53,6 +63,51 @@ class MpvPlayer:
             raise RuntimeError("mpv не запустился (установлен ли пакет mpv?)")
         self._reader = threading.Thread(target=self._read_loop, daemon=True)
         self._reader.start()
+
+    def _start_windows(self):
+        for _ in range(50):
+            try:
+                self._sock = open(self.socket_path, "r+b", buffering=0)
+                break
+            except OSError:
+                time.sleep(0.1)
+        if not self._sock:
+            raise RuntimeError("mpv не запустился")
+        self._rbuf = b""
+        self._reader = threading.Thread(target=self._poll_loop, daemon=True)
+        self._reader.start()
+
+    def _poll_loop(self):
+        # события mpv приходят только когда мы читаем канал — опрашиваем его
+        while self._sock is not None:
+            time.sleep(0.5)
+            try:
+                self._win_command(["get_property", "idle-active"])
+            except Exception:
+                self._sock = None
+                break
+
+    def _win_command(self, args):
+        with self._lock:
+            self._req_id += 1
+            rid = self._req_id
+            self._sock.write(json.dumps({"command": list(args), "request_id": rid}).encode("utf-8") + b"\n")
+            while True:
+                while b"\n" not in self._rbuf:
+                    chunk = self._sock.read(65536)
+                    if not chunk:
+                        raise OSError("mpv закрыл канал")
+                    self._rbuf += chunk
+                line, self._rbuf = self._rbuf.split(b"\n", 1)
+                try:
+                    msg = json.loads(line)
+                except ValueError:
+                    continue
+                if msg.get("request_id") == rid:
+                    return msg
+                if "event" in msg and self.on_event:
+                    # обработчик — в отдельном потоке: он сам может звать mpv
+                    threading.Thread(target=self.on_event, args=(msg,), daemon=True).start()
 
     def stop_process(self):
         if self._proc:
@@ -91,6 +146,9 @@ class MpvPlayer:
     # ---------- команды ----------
     def command(self, *args, timeout=3.0):
         self.start()
+        if IS_WIN:
+            resp = self._win_command(args) or {}
+            return resp.get("data")
         with self._lock:
             self._req_id += 1
             rid = self._req_id
