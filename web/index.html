@@ -509,18 +509,30 @@ async function loadSettings() {
       const room = el("select"); room.dataset.rooms = "1";
       actions.prepend(room, el("button", { class: "btn", onclick: () => act(call("voice.test", { speakerId: inputs.speakerId[1].value, room: room.value }), "Слушайте") }, "Послушать"));
     }
-    if (sec.id === "music") actions.prepend(el("button", { class: "btn", onclick: yandexLogin }, "Войти в Яндекс"), el("span", { id: "yandexBox" }));
+    if (sec.id === "music") {
+      const mode = el("select", { id: "yandexMode", title: "Какие права выдать Ирине" },
+        el("option", { value: "music" }, "Права: только Музыка"),
+        el("option", { value: "music_login" }, "Права: Музыка + имя аккаунта"),
+        el("option", { value: "all" }, "Права: все права приложения"));
+      mode.value = store.get("irene_ymode") || "music";
+      mode.addEventListener("change", () => store.set("irene_ymode", mode.value));
+      actions.prepend(el("div", { style: "display:flex;flex-direction:column;gap:8px;flex:1 1 100%" },
+        el("div", { class: "row", style: "margin:0" }, mode, el("button", { class: "btn", onclick: yandexLogin }, "Войти в Яндекс")),
+        el("span", { id: "yandexBox", class: "hint" },
+          "Ирина входит от имени приложения «Яндекс.Музыка» и запросит только выбранные права. Отозвать доступ: id.yandex.ru → Безопасность.")));
+    }
     actions.append(save);
     box.append(el("h2", {}, sec.title), el("div", { class: "card" }, form, actions));
   }
   renderRoomSelects();
 }
-async function yandexLogin() { renderYandex(await act(call("yandex.login"))); }
+async function yandexLogin() { renderYandex(await act(call("yandex.login", { mode: $("#yandexMode").value }))); }
 function renderYandex(d) {
   const box = $("#yandexBox"); if (!box) return;
   box.replaceChildren();
-  if (d.state === "waiting") box.append(el("span", {}, "Откройте ", el("a", { href: d.url, target: "_blank" }, d.url), " и введите код ", el("span", { class: "code" }, d.code)));
-  else if (d.state === "done") { box.append("Вход выполнен"); showRestart(true); }
+  if (d.state === "waiting") box.append(el("span", {}, "Откройте ", el("a", { href: d.url, target: "_blank" }, d.url),
+    " и введите код ", el("span", { class: "code" }, d.code), el("br"), `Запрошены права: ${d.mode}. Проверьте список на странице Яндекса перед подтверждением.`));
+  else if (d.state === "done") { box.append("Готово: " + (d.message || "вход выполнен")); showRestart(true); }
   else if (d.state === "error") box.append("Ошибка: " + d.message);
 }
 

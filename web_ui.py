@@ -114,6 +114,7 @@ class WebUI:
         self.phrases = collections.deque(maxlen=100)
         self.restart_needed = False
         self.yandex_login = {"state": "idle"}
+        self._yandex_cancel = False
         self.started = time.time()
         logger.addHandler(_LogHandler(self))
 
@@ -510,8 +511,55 @@ class WebUI:
 
     # ---------------------------------------------------------------- вход в Яндекс Музыку
     def api_yandex_login(self, params):
+        """Вход в Яндекс Музыку по коду. mode: music — только права Музыки (по умолчанию),
+        music_login — плюс имя аккаунта по желанию, all — все права приложения, как раньше."""
+        from utils import yandex_oauth as yo
         if self.yandex_login.get("state") == "waiting":
+            self._yandex_cancel = True                     # новый вход отменяет предыдущий
+            time.sleep(0.2)
+        mode = params.get("mode") if params.get("mode") in yo.MODES else "music"
+        try:
+            code = yo.request_code(mode)
+        except yo.OAuthError as e:
+            hint = " Попробуйте «все права приложения»." if e.code == "invalid_scope" else ""
+            self.yandex_login = {"state": "error", "message": f"Яндекс отклонил запрос: {e}.{hint}"}
             return self.yandex_login
+        except Exception as e:
+            self.yandex_login = {"state": "error", "message": f"Нет связи с Яндексом: {e}"}
+            return self.yandex_login
+        self._yandex_cancel = False
+        self.yandex_login = {"state": "waiting", "url": code.get("verification_url", "https://ya.ru/device"),
+                             "code": code.get("user_code"), "mode": yo.MODE_TITLES[mode]}
+
+        def run():
+            try:
+                token = yo.wait_token(code, should_cancel=lambda: self._yandex_cancel)["access_token"]
+                ok, text = yo.check_token(token)
+                if not ok:
+                    hint = " Попробуйте вход с правом «имя аккаунта»." if mode == "music" else ""
+                    raise RuntimeError(text + hint)
+                opts = self.core.plugin_options("plugin_yandex_music")
+                if opts is None:
+                    raise RuntimeError("плагин Яндекс Музыки не загружен")
+                opts["token"] = token
+                self.core.save_plugin_options("plugin_yandex_music", opts)
+                try:
+                    os.chmod(os.path.join(self.core.jaaOptionsPath, "plugin_yandex_music.json"), 0o600)
+                except OSError:
+                    pass
+                self.restart_needed = True
+                self.yandex_login = {"state": "done", "message": text}
+                logger.warning(f"Яндекс Музыка: {text}, права: {yo.MODE_TITLES[mode]}")
+            except yo.OAuthError as e:
+                if e.code == "cancelled":
+                    return
+                self.yandex_login = {"state": "error", "message": str(e)}
+            except Exception as e:
+                self.yandex_login = {"state": "error", "message": str(e)}
+            self.emit("yandex", self.yandex_login)
+
+        threading.Thread(target=run, name="yandex-login", daemon=True).start()
+        return self.yandex_login
         try:
             from yandex_music import Client
         except ImportError:
