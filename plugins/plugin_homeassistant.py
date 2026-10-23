@@ -24,6 +24,7 @@ from utils.cmd_route import delegate_longer_command
 
 modname = os.path.basename(__file__)[:-3]
 logger = logging.getLogger(__name__)
+journal = logging.getLogger("rooms")      # журнал сервера комнат — виден в веб-интерфейсе
 
 # Слова-подсказки домена: если они есть во фразе, ищем только среди этих доменов
 DOMAIN_HINTS = {
@@ -134,10 +135,19 @@ def _call_service(core, domain: str, service: str, entity_ids, extra=None):
     return _api(core, "POST", f"services/{domain}/{service}", data)
 
 
+_ENDINGS = sorted(["ами", "ями", "ого", "его", "ому", "ему", "ыми", "ими", "ая", "яя", "ой", "ей", "ий", "ый",
+                   "ую", "юю", "ое", "ее", "ом", "ем", "ым", "им", "ых", "их", "ах", "ях", "ам", "ям", "ов", "ев",
+                   "а", "я", "у", "ю", "е", "ы", "и", "о", "ь"], key=len, reverse=True)
+
+
 def _stem(word: str) -> str:
-    # грубый стемминг для русских падежей: "кухне"/"кухня"/"кухню" -> "кухн"
+    # простой стемминг для падежей: "кухне"/"кухня" -> "кухн", "мокрой"/"мокрая" -> "мокр"
     word = word.lower().replace("ё", "е")
-    return word[:5] if len(word) > 5 else (word[:-1] if len(word) > 3 else word)
+    for end in _ENDINGS:
+        if word.endswith(end) and len(word) - len(end) >= 3:
+            word = word[:-len(end)]
+            break
+    return word[:5]
 
 
 def _stems(text: str):
@@ -208,11 +218,39 @@ def _find_entities(core, phrase: str, allowed_domains=None, alternatives=None):
     query = _stems(phrase) - hint_words
 
     with _lock:
-        candidates = [e for e in _entities if not hint_domains or e["domain"] in hint_domains]
+        all_entities = list(_entities)
+    candidates = [e for e in all_entities if (e["domain"] in hint_domains if hint_domains
+                                              else e["domain"] in CONTROL_DOMAINS)]
+    if "light" in hint_domains and not allowed_domains:
+        # реле и выключатели света в ZHA часто числятся как switch — тоже свет, но лампы важнее
+        candidates += [e for e in all_entities if e["domain"] in ("switch", "input_boolean")
+                       and e not in candidates]
 
     # комната, откуда пришла команда (сервер комнат runva_rooms.py); её имя = зона в Home Assistant
     room = getattr(core, "current_room", None)
     room_stems = _stems(getattr(room, "name", "") or "")
+
+    # 2) названа комната ("свет на кухне") — ищем только в ней, иначе похожее имя из другой комнаты
+    #    может перехватить команду, и выключится не тот свет
+    named = {e["area"] for e in all_entities if e["area_stems"] and e["area_stems"] <= query}
+    if named:
+        longest = max(len(_stems(a)) for a in named)          # «сухая зона» важнее просто «зоны»
+        named = {a for a in named if len(_stems(a)) == longest}
+        named_stems = set().union(*(_stems(a) for a in named))
+        candidates = [e for e in candidates if e["area"] in named]
+        lamps = [e for e in candidates if e["domain"] == "light"]
+        if "light" in hint_domains and lamps:
+            candidates = lamps                                   # есть лампы — выключатели не трогаем
+        rest = query - named_stems
+        if not rest and not hint_domains:
+            # «выключи кухню» — это про свет, а не про все устройства зоны
+            candidates = lamps or [e for e in candidates if e["domain"] in ("switch", "input_boolean")]
+        if not rest:
+            # только комната: "свет на кухне" -> все подходящие устройства этой зоны
+            if not candidates:
+                return [], phrase
+            return candidates, ", ".join(sorted(named))
+        query = rest
 
     if not query:
         if not room_stems:
@@ -223,16 +261,21 @@ def _find_entities(core, phrase: str, allowed_domains=None, alternatives=None):
     scored = []
     for e in candidates:
         name_stems = e["stems"] - hint_words
-        target = name_stems | e["area_stems"]
+        # зона считается, только если названа целиком: «мокрая зона» не должна найти «сухую зону»
+        area_full = bool(e["area_stems"]) and e["area_stems"] <= query
+        target = name_stems | (e["area_stems"] if area_full else set())
         overlap = len(query & target)
         score = overlap / max(len(query), 1)
-        if overlap and query <= e["area_stems"] and not (query & name_stems):
+        if overlap and area_full and not (query & name_stems):
             score -= 0.01  # попали только в зону — чуть ниже точного совпадения по имени
-        # похожесть строк на случай неточного распознавания
-        ratio = difflib.SequenceMatcher(None, " ".join(sorted(query)), " ".join(sorted(target))).ratio()
-        score = max(score, ratio * 0.9)
+        # похожесть имени на случай неточного распознавания
+        if name_stems:
+            ratio = difflib.SequenceMatcher(None, " ".join(sorted(query)), " ".join(sorted(name_stems))).ratio()
+            score = max(score, ratio * 0.9)
         if room_stems and score > 0 and e["area_stems"] & room_stems:
             score += 0.05  # при равенстве выбираем устройство в той же комнате
+        if e["domain"] in ("switch", "input_boolean") and "light" in hint_domains:
+            score -= 0.02  # выключатель — только если ламп с таким именем нет
         scored.append((score, e))
 
     if not scored:
@@ -343,26 +386,66 @@ def _ask_room(core, phrase, action, alternatives):
     _execute(core, chosen, phrase, f"{phrase}, {where}" if where else phrase, action)
 
 
+def _state(core, entity_id):
+    try:
+        return _api(core, "GET", f"states/{entity_id}", timeout=4).get("state")
+    except Exception:
+        return None
+
+
+def _describe(entities):
+    return ", ".join(f"{e['id']} «{e.get('name', '')}»" + (f" ({e['area']})" if e.get("area") else "")
+                     for e in entities)
+
+
 def _execute(core, entities, name, phrase, action):
+    journal.info(f"Home Assistant: «{phrase}» -> {_describe(entities)}")
+    # Zigbee-устройство без связи HA принимает команду молча — проверим заранее
+    states = {e["id"]: _state(core, e["id"]) for e in entities if e["domain"] not in ("scene", "script")}
+    alive = [e for e in entities if states.get(e["id"]) not in ("unavailable",)]
+    dead = [e for e in entities if e not in alive]
+    if dead:
+        journal.warning(f"Home Assistant: недоступны (нет связи с устройством): {_describe(dead)}")
+    if not alive:
+        core.say(f"{phrase.capitalize()}: устройство недоступно, нет связи. Проверьте его в Home Assistant")
+        return
     try:
         by_domain = {}
-        for e in entities:
+        for e in alive:
             by_domain.setdefault(e["domain"], []).append(e["id"])
+        changed = []
         for domain, ids in by_domain.items():
             service = _service_for(domain, action)
             if service is None:
                 core.say(f"{name} так не умеет")
                 return
             svc_domain = "homeassistant" if service.startswith("homeassistant.") else domain
-            _call_service(core, svc_domain, service.split(".")[-1], ids)
+            result = _call_service(core, svc_domain, service.split(".")[-1], ids)
+            if isinstance(result, list):
+                changed += [st.get("entity_id") for st in result if isinstance(st, dict)]
     except Exception as e:
         logger.exception(e)
+        journal.error(f"Home Assistant: ошибка вызова для «{phrase}»: {e}")
         core.say("Home Assistant вернул ошибку")
         return
 
+    if not changed:
+        journal.info("Home Assistant: состояние не изменилось (уже было так или устройство не ответило)")
     verbs = {"on": "Включаю", "off": "Выключаю", "toggle": "Переключаю", "open": "Открываю",
              "close": "Закрываю", "scene": "Активирую сцену"}
-    _say_ok(core, f"{verbs[action]} {name if action == 'scene' else phrase}")
+    what = name if action == "scene" else phrase
+    if action != "scene" and not _names_match(phrase, alive):
+        what = name           # нашлось не совсем то, что сказали, — называем, что именно переключили
+    tail = f", кроме: {_describe(dead)}" if dead else ""
+    _say_ok(core, f"{verbs[action]} {what}{' — часть устройств недоступна' if tail else ''}")
+
+
+def _names_match(phrase, entities):
+    """Сказанное совпадает с выбранным (по имени или зоне)? Иначе в ответе называем выбранное устройство."""
+    said = _stems(phrase) - {_stem(w) for w in GENERIC_WORDS}
+    if not said:
+        return True
+    return all(said & (e.get("stems", set()) | e.get("area_stems", set())) for e in entities)
 
 
 def _service_for(domain: str, action: str):
