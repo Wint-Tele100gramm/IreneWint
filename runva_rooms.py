@@ -48,10 +48,14 @@ DEFAULT_OPTIONS = {
     "arbitration_ms": 450,       # окно, в котором одна фраза из нескольких комнат считается одной командой
     "max_segment_sec": 12,       # максимальная длина одной фразы от клиента
     "default_volume": 70,        # громкость ответов на клиентах по умолчанию
-    "log_heard": False,
+    "log_heard": False,          # писать в лог все распознанные фразы, даже без имени помощника (для проверки микрофона)
     "barge_in": False,           # микрофон приставки слушает и во время ответа Ирины (нужно эхоподавление:
-                                 # bash scripts/rk3528/enable_aec.sh) — ответ можно прервать словом "стоп"          # писать в лог все распознанные фразы, даже без имени помощника (для проверки микрофона)
+                                 # bash scripts/rk3528/enable_aec.sh) — ответ можно прервать словом "стоп"
     "tts_chunk_bytes": 4096,
+    "dump_audio": "",            # папка: сохранять каждую фразу из комнат в WAV (отладка распознавания); "" — выключено
+    "dump_keep": 300,            # сколько последних WAV хранить в этой папке
+    "tts_cache_max_mb": 300,     # кэш озвучки: не больше стольких МБ...
+    "tts_cache_max_days": 90,    # ...и без фраз, не звучавших столько дней (0 — без ограничения)
 }
 
 
@@ -76,6 +80,7 @@ class Room:
         self.wake_sent = False
         self.armed_until = 0.0
         self.fragment = None                  # (текст, время) — короткий обрывок фразы без имени
+        self.dump = bytearray() if server.options.get("dump_audio") else None
         self.thread = threading.Thread(target=self._recognize_loop, name=f"asr-{room_id}", daemon=True)
         self.thread.start()
 
@@ -116,18 +121,24 @@ class Room:
                 parts.append(text)
                 full = " ".join(p for p in parts if p)
                 parts, seg_bytes, self.wake_sent = [], 0, False
+                self._dump_segment(full)
                 if full:
                     self._phrase(full)
                 if item == "END":
                     continue
             if isinstance(item, bytes):
                 seg_bytes += len(item)
+                if self.dump is not None:
+                    self.dump += item
+                    if len(self.dump) > max_bytes:
+                        del self.dump[:len(self.dump) - max_bytes]
                 text, partial = rec.accept(item)
                 if text is not None:
                     seg_bytes = 0 if self.local else seg_bytes
                     if self.local:
                         self.wake_sent = False
                         if text:
+                            self._dump_segment(text)
                             self._phrase(text)
                     elif text:
                         parts.append(text)
@@ -138,6 +149,29 @@ class Room:
                         self.wake_sent = True
                         self.send_json({"type": "wake"})
                         self.server.on_wake(self, partial)
+
+    def _dump_segment(self, text):
+        """Сохраняет звук фразы в WAV (опция dump_audio): слышно, что на самом деле пришло с микрофона."""
+        if self.dump is None:
+            return
+        pcm, self.dump = bytes(self.dump), bytearray()
+        if not pcm or (self.local and not text):
+            return
+        try:
+            folder = self.server.options["dump_audio"]
+            os.makedirs(folder, exist_ok=True)
+            safe = "".join(c if c.isalnum() else "_" for c in (text or "тишина"))[:40]
+            path = os.path.join(folder, f"{time.strftime('%Y%m%d-%H%M%S')}_{self.id}_{self.level}_{safe}.wav")
+            with wave.open(path, "wb") as w:
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(16000)
+                w.writeframes(pcm)
+            files = sorted(f for f in os.listdir(folder) if f.endswith(".wav"))
+            for old in files[:-int(self.server.options.get("dump_keep", 300))]:
+                os.unlink(os.path.join(folder, old))
+        except Exception as e:
+            logger.warning(f"Не удалось сохранить звук фразы: {e}")
 
     def _phrase(self, text):
         if self.speaking and self.server.is_stop_phrase(text) and not self.server.has_name(text):
@@ -214,6 +248,8 @@ class RoomServer:
         self.pending_timer = None
         self.pending_lock = threading.Lock()
         self.context_room = None
+        self.say_everywhere = False               # отложенное событие, а его комната отключилась — во все комнаты
+        self._in_broadcast = False
 
         from utils.asr_backends import create_backend
         self.asr = create_backend(options)
@@ -227,9 +263,13 @@ class RoomServer:
         self.core.current_room = None
         self.core.rooms_server = self
         self._install_tts_router()
+        self._install_room_timers()
+        # таймаут диалога приходит из потока таймера — выполняем его в потоке команд, в комнате диалога
+        self.core.run_in_main = lambda fn: self.cmd_q.put(("call", self.context_room, fn))
 
         threading.Thread(target=self._command_loop, name="commands", daemon=True).start()
         threading.Thread(target=self._ticker, name="timers", daemon=True).start()
+        threading.Thread(target=self._cache_cleaner, name="tts-cache", daemon=True).start()
 
     # --- утилиты ---
     def has_name(self, text: str) -> bool:
@@ -317,7 +357,10 @@ class RoomServer:
                     core._update_timers()
                     continue
                 core.current_room = room
-                core.run_input_str(text)
+                if kind == "call":
+                    text()           # здесь text — функция (продолжение диалога после таймаута)
+                else:
+                    core.run_input_str(text)
                 self.context_room = room if core.context is not None else None
                 if hasattr(core, "on_phrase_done"):
                     core.on_phrase_done()
@@ -336,18 +379,16 @@ class RoomServer:
     def _install_tts_router(self):
         core = self.core
         local_say = core.play_voice_assistant_speech   # уже с приглушением музыки из плагина Яндекс Музыки
+        local_wav = core.play_wav
+        self._local_say, self._local_wav = local_say, local_wav
 
         def routed(text):
+            if self.say_everywhere and not self._in_broadcast:
+                self.broadcast(text)
+                return
             room = core.current_room
             if room is None or room.local:
-                if room is not None:
-                    room.speaking = True
-                try:
-                    return local_say(text)
-                finally:
-                    if room is not None:
-                        room.speaking = False
-                        room.mute_until = time.time() + 0.4
+                return self._play_local(room, local_say, text)
             if not room.connected:
                 logger.warning(f"{room} отключилась, ответ «{text}» не озвучен")
                 return
@@ -356,8 +397,31 @@ class RoomServer:
             if pcm:
                 room.play_pcm(rate, pcm)
 
+        def routed_wav(path):
+            # звуки плагинов (сигнал таймера и т.п.) — тоже в комнату, а не в динамик приставки
+            if self.say_everywhere and not self._in_broadcast:
+                self._broadcast_audio(*limit_rate(*read_wav_mono16(path)), local_fn=lambda: local_wav(path))
+                return
+            room = core.current_room
+            if room is None or room.local:
+                return self._play_local(room, local_wav, path)
+            if room.connected:
+                room.play_pcm(*limit_rate(*read_wav_mono16(path)))
+
         core.play_voice_assistant_speech = routed
+        core.play_wav = routed_wav
         core.say_in_all_rooms = self.broadcast
+
+    @staticmethod
+    def _play_local(room, fn, arg):
+        if room is not None:
+            room.speaking = True
+        try:
+            return fn(arg)
+        finally:
+            if room is not None:
+                room.speaking = False
+                room.mute_until = time.time() + 0.4
 
     def synth(self, text):
         """Текст -> (частота, PCM s16le mono) через выбранный TTS Ирины (с кэшем)."""
@@ -369,6 +433,8 @@ class RoomServer:
             path = core.get_tempfilename() + ".wav"
         if not (core.useTTSCache and os.path.exists(path)):
             core.tts_to_filewav(text, path)
+        elif core.useTTSCache:
+            core.touch_cache_file(path)
         try:
             return read_wav_mono16(path)
         except Exception as e:
@@ -381,21 +447,64 @@ class RoomServer:
     def broadcast(self, text):
         """Озвучить во всех комнатах сразу (объявления)."""
         rate, pcm = self.synth(text)
+        return self._broadcast_audio(rate, pcm, local_fn=lambda: self._local_say(text))
+
+    def _broadcast_audio(self, rate, pcm, local_fn):
         rooms = [r for r in self.rooms.values() if r.connected]
         threads = [threading.Thread(target=r.play_pcm, args=(rate, pcm)) for r in rooms if not r.local]
         for t in threads:
             t.start()
         local = [r for r in rooms if r.local]
         if local:
-            prev = self.core.current_room
-            self.core.current_room = local[0]
+            self._in_broadcast = True
             try:
-                self.core.play_voice_assistant_speech(text)
+                self._play_local(local[0], lambda _: local_fn(), None)
             finally:
-                self.core.current_room = prev
+                self._in_broadcast = False
         for t in threads:
             t.join()
         return len(rooms)
+
+    # --- отложенные события (таймеры) звучат в той комнате, где их поставили ---
+    def _install_room_timers(self):
+        core = self.core
+        orig_set_timer = core.set_timer
+
+        def set_timer(duration, func_end, func_upd=None):
+            room = core.current_room
+            return orig_set_timer(duration, (self._fire_in_room, (room.id if room else None, func_end)), func_upd)
+
+        core.set_timer = set_timer
+
+    def _fire_in_room(self, core, arg):
+        room_id, func = arg
+        room = self.rooms.get(room_id) if room_id else None
+        everywhere = False
+        if room is None or not room.connected:
+            others = [r for r in self.rooms.values() if r.connected]
+            if room_id and others:
+                logger.warning(f"Комната «{room_id}» отключилась — событие таймера озвучу во всех комнатах")
+                everywhere = True
+            room = None
+        prev = core.current_room
+        core.current_room, self.say_everywhere = room, everywhere
+        try:
+            core.call_ext_func(func)
+        finally:
+            core.current_room, self.say_everywhere = prev, False
+
+    # --- кэш озвучки не должен съесть eMMC ---
+    def _cache_cleaner(self):
+        from utils.tts_cache_cleanup import cleanup
+        while True:
+            try:
+                deleted, freed = cleanup(self.core.tts_cache_dir, self.options.get("tts_cache_max_mb", 0),
+                                         self.options.get("tts_cache_max_days", 0))
+                if deleted:
+                    logger.info(f"Кэш озвучки: удалено {deleted} фраз, освобождено {freed / 1e6:.1f} МБ")
+            except Exception as e:
+                logger.warning(f"Очистка кэша озвучки: {e}")
+            time.sleep(6 * 3600)
 
     # --- WebSocket ---
     async def handle_client(self, ws):
@@ -512,10 +621,21 @@ def read_wav_mono16(path):
     return rate, np.clip(a, -32768, 32767).astype("<i2").tobytes()
 
 
+def limit_rate(rate, pcm, max_rate=22050):
+    """44,1/48 кГц -> 22,05 кГц: клиенту хватает, а поток вдвое меньше (буфер ESP32 небольшой)."""
+    if rate <= max_rate or not pcm:
+        return rate, pcm
+    a = np.frombuffer(pcm, dtype="<i2").astype(np.float32)
+    n = int(len(a) * max_rate / rate)
+    out = np.interp(np.arange(n) * (rate / max_rate), np.arange(len(a)), a)
+    return max_rate, np.clip(out, -32768, 32767).astype("<i2").tobytes()
+
+
 def main():
     parser = argparse.ArgumentParser(description="Ирина: сервер для клиентов в комнатах")
     parser.add_argument("--local-room", help="использовать микрофон приставки как комнату с этим именем")
     parser.add_argument("--port", type=int)
+    parser.add_argument("--dump-audio", metavar="ПАПКА", help="сохранять звук каждой фразы в WAV (отладка)")
     args = parser.parse_args()
 
     options = load_options(py_file=os.path.abspath(__file__), default_options=DEFAULT_OPTIONS)
@@ -523,6 +643,8 @@ def main():
         options["local_room"] = args.local_room
     if args.port:
         options["port"] = args.port
+    if args.dump_audio:
+        options["dump_audio"] = args.dump_audio
 
     # ядро Ирины настраивает свои логи само; у сервера комнат — свой вывод, чтобы видеть распознанные фразы
     handler = logging.StreamHandler()

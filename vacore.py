@@ -1,3 +1,4 @@
+import inspect
 import json
 import os
 import traceback
@@ -22,6 +23,10 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+class DialogTimeout(Exception):
+    """Бросается в генератор диалога, если пользователь не ответил вовремя."""
+
+
 # main VACore class
 
 class VACore(JaaCore):
@@ -41,6 +46,8 @@ class VACore(JaaCore):
 
         self.ttss = {
         }
+        self.tts_owner: Dict[str, str] = {}   # движок TTS -> плагин (его настройки входят в ключ кэша)
+        self.run_in_main = lambda fn: fn()     # сервер комнат подменяет: выполнять в потоке команд
 
         self.playwavs = {
         }
@@ -150,6 +157,7 @@ class VACore(JaaCore):
         if "tts" in manifest: # process commands
             for cmd in manifest["tts"].keys():
                 self.ttss[cmd] = manifest["tts"][cmd]
+                self.tts_owner[cmd] = modname
 
         # adding playwav engines from plugin manifest
         if "playwav" in manifest: # process commands
@@ -268,6 +276,8 @@ class VACore(JaaCore):
                 #print('Temp TTS filename: ', tts_file)
                 if not self.useTTSCache or self.useTTSCache and not os.path.exists(tts_file):
                     self.tts_to_filewav(text_to_speech, tts_file)
+                elif self.useTTSCache:
+                    self.touch_cache_file(tts_file)
 
                 self.play_wav(tts_file)
                 if not self.useTTSCache and os.path.exists(tts_file):
@@ -341,10 +351,26 @@ class VACore(JaaCore):
         return self.tmpdir+"/vacore_"+str(self.tmpcnt)
 
     def get_tts_cache_file(self, text_to_speech:str):
-        hash = hashlib.md5(text_to_speech.encode('utf-8')).hexdigest()
-        text_slice = text_to_speech[:40]
+        # в ключ входят и настройки движка (голос, скорость): после их смены старые фразы не звучат прежним голосом
+        settings = ""
+        owner = self.tts_owner.get(self.ttsEngineId)
+        if owner:
+            try:
+                settings = json.dumps(self.plugin_options(owner), sort_keys=True, ensure_ascii=False)
+            except Exception:
+                pass
+        hash = hashlib.md5((settings + "\n" + text_to_speech).encode('utf-8')).hexdigest()
+        text_slice = text_to_speech[:40].replace("/", " ")
         filename = ".".join([text_slice, hash, "wav"])
         return self.tts_cache_dir+"/"+self.ttsEngineId+"/"+filename
+
+    @staticmethod
+    def touch_cache_file(path: str):
+        # время последнего использования — по нему очистка кэша удаляет давно не звучавшие фразы
+        try:
+            os.utime(path, None)
+        except OSError:
+            pass
 
     def all_num_to_text(self,text:str):
         from utils.all_num_to_text import all_num_to_text
@@ -634,9 +660,45 @@ class VACore(JaaCore):
 
     def call_ext_func_phrase(self,phrase,funcparam):
         if isinstance(funcparam,tuple): # funcparam =(func, param)
-            funcparam[0](self,phrase,funcparam[1])
+            res = funcparam[0](self,phrase,funcparam[1])
         else: # funcparam = func
-            funcparam(self,phrase)
+            res = funcparam(self,phrase)
+        if inspect.isgenerator(res):
+            self.dialog_start(res)
+
+    # ------- диалоги на генераторах (идея из форка AlexeyBond) -------
+    # Команда может вернуть генератор:
+    #     def ask_light(core, phrase):
+    #         answer = yield "Где включить свет: на кухне или в зале?"   # сказать и ждать ответа (без имени)
+    #         answer = yield ("Повторите", 15)                          # ...с таймаутом 15 с
+    #         return "Готово"                                            # сказать и закончить диалог
+    # Если ответа нет, в генератор приходит исключение DialogTimeout: его можно перехватить и что-то сказать.
+    # Ответ ждётся в той же комнате, где начался диалог.
+
+    def dialog_start(self, gen):
+        self._dialog_step(gen, lambda: next(gen))
+
+    def _dialog_step(self, gen, step):
+        try:
+            value = step()
+        except StopIteration as e:
+            if isinstance(e.value, str) and e.value:
+                self.say(e.value)
+            return
+        except DialogTimeout:
+            return
+        if inspect.isgenerator(value):          # вложенный диалог без yield from — просто продолжаем его
+            return self.dialog_start(value)
+        timeout = None
+        if isinstance(value, tuple):
+            value, timeout = (value + (None,))[:2]
+        if isinstance(value, str) and value:
+            self.say(value)
+
+        def answer(core, phrase):
+            core._dialog_step(gen, lambda: gen.send(phrase))
+        answer.dialog_gen = gen
+        self.context_set(answer, timeout)
 
     # ------- play wav from subfolder ----------
     def play_wav(self,wavfile):
@@ -724,8 +786,13 @@ class VACore(JaaCore):
     #def _timer_context
     def _context_clear_timer(self):
         print("Context cleared after timeout")
+        context = self.context
         self.contextTimer = None
         self.context_clear()
+        gen = getattr(context, "dialog_gen", None)
+        if gen is not None:
+            # даём диалогу ответить на тишину — в потоке команд (ядро не потокобезопасно)
+            self.run_in_main(lambda: self._dialog_step(gen, lambda: gen.throw(DialogTimeout())))
 
     def context_clear(self):
         self.context = None

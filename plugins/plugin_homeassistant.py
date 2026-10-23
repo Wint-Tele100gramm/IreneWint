@@ -18,7 +18,7 @@ import difflib
 
 import requests
 
-from vacore import VACore
+from vacore import VACore, DialogTimeout
 from utils.ru_words_to_num import extract_number
 from utils.cmd_route import delegate_longer_command
 
@@ -183,8 +183,10 @@ def _ensure_entities(core):
 
 # ---------------- поиск устройства по фразе ----------------
 
-def _find_entities(core, phrase: str, allowed_domains=None):
-    """Возвращает (список entity, читаемое имя) для фразы вроде 'свет на кухне'."""
+def _find_entities(core, phrase: str, allowed_domains=None, alternatives=None):
+    """Возвращает (список entity, читаемое имя) для фразы вроде 'свет на кухне'.
+    alternatives — если передан список, в него попадут равноценные устройства из разных комнат
+    (тогда стоит переспросить, какое имелось в виду)."""
     phrase = phrase.lower().replace("ё", "е").strip()
     o = _opts(core)
 
@@ -242,6 +244,10 @@ def _find_entities(core, phrase: str, allowed_domains=None):
 
     best = [e for s, e in scored if s >= best_score - 0.001]
     # "свет на кухне" -> все лампы зоны "Кухня", если имя прямо не названо
+    # одинаково подходят устройства из разных комнат ("включи лампу" без комнаты) — пусть спросят, где
+    if alternatives is not None and len(best) > 1 and len({e["area"] for e in best if e["area"]}) > 1:
+        alternatives.extend(best)
+        return best[:1], best[0]["name"]
     if len(best) > 1 and hint_domains:
         names = ", ".join(sorted({e["area"] or e["name"] for e in best}))
         return best, names
@@ -272,8 +278,7 @@ def do_action(core: VACore, phrase: str, action: str):
     if music_hook is not None and action in ("on", "off") and music_hook(core, action, phrase):
         return
     if not phrase:
-        core.say("Что именно?")
-        return
+        return _ask_what(core, action)
     if not _check_ready(core):
         return
 
@@ -283,8 +288,9 @@ def do_action(core: VACore, phrase: str, action: str):
     elif action == "scene":
         allowed = ["scene", "script"]
 
+    alternatives = []
     try:
-        entities, name = _find_entities(core, phrase, allowed)
+        entities, name = _find_entities(core, phrase, allowed, alternatives)
     except Exception as e:
         logger.exception(e)
         core.say("Не удалось связаться с Home Assistant")
@@ -292,7 +298,52 @@ def do_action(core: VACore, phrase: str, action: str):
     if not entities:
         core.say(f"Не нашла устройство {phrase}")
         return
+    if alternatives:
+        return _ask_room(core, phrase, action, alternatives)
+    return _execute(core, entities, name, phrase, action)
 
+
+_ACTION_WORDS = {"on": "включить", "off": "выключить", "toggle": "переключить", "open": "открыть",
+                 "close": "закрыть", "scene": "включить"}
+
+
+def _ask_what(core, action):
+    """«Ирина, включи» — переспрашиваем, что именно (диалог: ответ без имени)."""
+    try:
+        answer = yield f"Что {_ACTION_WORDS.get(action, 'сделать')}?"
+    except DialogTimeout:
+        return
+    answer = (answer or "").strip()
+    if answer and not set(answer.split()) & {"ничего", "отмена", "отмени", "стоп", "никакой"}:
+        res = do_action(core, answer, action)
+        if res is not None:
+            yield from res
+
+
+def _ask_room(core, phrase, action, alternatives):
+    """Одинаковые устройства в разных комнатах — уточняем: «Торшер где: в гостиной или в спальне?»."""
+    areas = []
+    for e in alternatives:
+        if e["area"] and e["area"] not in areas:
+            areas.append(e["area"])
+    question = f"{phrase.capitalize()} где: " + ", ".join(areas[:-1]) + " или " + areas[-1] + "?"
+    try:
+        answer = yield (question, 10)
+    except DialogTimeout:
+        return
+    answer_stems = _stems(answer or "")
+    chosen = [e for e in alternatives if e["area_stems"] & answer_stems]
+    if not chosen:
+        if any(w in (answer or "").split() for w in ("везде", "все", "всё", "оба", "обе")):
+            chosen = alternatives
+        else:
+            core.say("Не поняла, отменяю")
+            return
+    where = ", ".join(sorted({e["area"] for e in chosen if e["area"]})).lower()
+    _execute(core, chosen, phrase, f"{phrase}, {where}" if where else phrase, action)
+
+
+def _execute(core, entities, name, phrase, action):
     try:
         by_domain = {}
         for e in entities:
