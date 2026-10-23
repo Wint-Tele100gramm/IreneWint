@@ -50,7 +50,33 @@ def start_with_options(core: VACore, manifest: dict):
         commands[phrase.lower()] = (run_alias, str(target))
     for phrase, steps in (options.get("scenes") or {}).items():
         commands[phrase.lower()] = (run_scene, list(steps) if isinstance(steps, list) else [str(steps)])
+    _claim(core, commands)
     return manifest
+
+
+def _claim(core: VACore, ours: dict):
+    """Свои фразы важнее одноимённых команд других плагинов («доброе утро» у приветствий):
+    убираем такие варианты из чужих команд."""
+    mine = {v for key in ours for v in key.split("|")}
+    for key in list(core.commands):
+        if key in ours:
+            continue
+        variants = key.split("|")
+        rest = [v for v in variants if v not in mine]
+        if len(rest) != len(variants):
+            func = core.commands.pop(key)
+            if rest:
+                core.commands["|".join(rest)] = func
+
+
+def reload(core: VACore):
+    """Применить изменённые настройки без перезапуска (вызывается из веб-интерфейса)."""
+    for key in core.plugin_commands.get(modname, []):
+        core.commands.pop(key, None)
+    manifest = {"options": core.plugin_options(modname), "commands": {}}
+    start_with_options(core, manifest)          # заодно забирает свои фразы у других плагинов
+    core.commands.update(manifest["commands"])
+    core.plugin_commands[modname] = list(manifest["commands"])
 
 
 def _run_command(core: VACore, text: str):

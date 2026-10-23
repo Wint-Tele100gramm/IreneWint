@@ -1,0 +1,544 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ирина</title>
+<style>
+:root {
+  --bg: #f4f5f7; --panel: #ffffff; --text: #1d2125; --muted: #66707a; --line: #e2e5e9;
+  --accent: #6c4cd8; --accent-soft: #eee9fc; --ok: #1f9d55; --warn: #c27c0e; --bad: #d23c3c;
+  --band: rgba(31,157,85,.12); --input: #ffffff; --shadow: 0 1px 2px rgba(0,0,0,.06);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #15171a; --panel: #1e2125; --text: #e8eaed; --muted: #9aa3ad; --line: #30343a;
+    --accent: #a48bff; --accent-soft: #2b2540; --ok: #43c47a; --warn: #e3a13a; --bad: #f06a6a;
+    --band: rgba(67,196,122,.14); --input: #16181b; --shadow: none;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+header { position: sticky; top: 0; z-index: 5; background: var(--panel); border-bottom: 1px solid var(--line); }
+.top { display: flex; align-items: center; gap: 12px; padding: 10px 16px; max-width: 1100px; margin: 0 auto; }
+.logo { font-weight: 700; font-size: 18px; letter-spacing: .2px; }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--bad); display: inline-block; }
+.dot.on { background: var(--ok); }
+.sys { margin-left: auto; color: var(--muted); font-size: 13px; text-align: right; }
+nav { display: flex; gap: 2px; padding: 0 12px; max-width: 1100px; margin: 0 auto; overflow-x: auto; }
+nav button { background: none; border: 0; border-bottom: 2px solid transparent; color: var(--muted);
+  padding: 9px 12px; font: inherit; cursor: pointer; white-space: nowrap; }
+nav button.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+main { max-width: 1100px; margin: 0 auto; padding: 16px; }
+section.tab { display: none; } section.tab.active { display: block; }
+h2 { font-size: 17px; margin: 22px 0 10px; } h2:first-child { margin-top: 4px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 14px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px;
+  box-shadow: var(--shadow); }
+.card.off { opacity: .65; }
+.card h3 { margin: 0; font-size: 17px; display: flex; align-items: center; gap: 8px; }
+.sub { color: var(--muted); font-size: 13px; }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; margin-top: 8px; font-size: 13px; }
+.kv span:nth-child(odd) { color: var(--muted); }
+input, select, textarea { font: inherit; color: var(--text); background: var(--input);
+  border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; min-width: 0; }
+input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+textarea { width: 100%; resize: vertical; }
+input[type=range] { padding: 0; flex: 1; accent-color: var(--accent); }
+input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); }
+button.btn { font: inherit; border: 1px solid var(--line); background: var(--panel); color: var(--text);
+  border-radius: 8px; padding: 7px 12px; cursor: pointer; }
+button.btn:hover { border-color: var(--accent); }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.danger { color: var(--bad); }
+button:disabled { opacity: .5; cursor: default; }
+.grow { flex: 1; }
+.badge { font-size: 12px; padding: 1px 8px; border-radius: 10px; background: var(--accent-soft); color: var(--accent); }
+.badge.ok { background: transparent; color: var(--ok); border: 1px solid var(--ok); }
+.badge.off { background: transparent; color: var(--muted); border: 1px solid var(--line); }
+.badge.warn { background: transparent; color: var(--warn); border: 1px solid var(--warn); }
+.spark { width: 100%; height: 54px; display: block; margin-top: 8px; }
+.hint { color: var(--muted); font-size: 13px; margin: 4px 0 0; }
+.banner { background: var(--accent-soft); border: 1px solid var(--accent); border-radius: 10px;
+  padding: 10px 14px; display: none; align-items: center; gap: 12px; margin-bottom: 14px; }
+.banner.show { display: flex; }
+.list { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+.item { display: flex; gap: 10px; padding: 8px 14px; border-top: 1px solid var(--line); align-items: baseline; }
+.item:first-child { border-top: 0; }
+.item time { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; flex: none; }
+.item .who { color: var(--muted); font-size: 13px; flex: none; }
+.item .what { flex: 1; overflow-wrap: anywhere; }
+.item.muted .what { color: var(--muted); }
+.lvl { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.log .ERROR .what { color: var(--bad); }
+.form { display: grid; grid-template-columns: minmax(160px, 260px) 1fr; gap: 10px 16px; align-items: center; }
+.form label { color: var(--muted); }
+.form .help { grid-column: 2; margin-top: -6px; }
+.pair { display: grid; grid-template-columns: 1fr auto 1fr auto; gap: 8px; align-items: center; margin-top: 8px; }
+.empty { color: var(--muted); padding: 14px; text-align: center; }
+.code { font: 600 26px/1.2 ui-monospace, monospace; letter-spacing: 3px; }
+#login { max-width: 360px; margin: 12vh auto; }
+#toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--text); color: var(--bg);
+  padding: 9px 16px; border-radius: 10px; opacity: 0; transition: opacity .2s; pointer-events: none; max-width: 90vw; }
+#toast.show { opacity: .95; }
+details summary { cursor: pointer; color: var(--accent); margin-top: 10px; }
+audio { height: 32px; max-width: 100%; }
+@media (max-width: 600px) {
+  .form { grid-template-columns: 1fr; gap: 4px; } .form .help { grid-column: 1; margin: 0 0 8px; }
+  .pair { grid-template-columns: 1fr auto; } .sys { display: none; }
+  .grid { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+
+<div id="login" class="card" hidden>
+  <h3>Ирина</h3>
+  <p class="sub">Пароль — ключ клиентов (<code>token</code> из runva_rooms.json) или пароль страницы, если он задан.</p>
+  <form id="loginForm" class="row">
+    <input id="pw" type="password" class="grow" placeholder="Пароль" autocomplete="current-password">
+    <button class="btn primary">Войти</button>
+  </form>
+  <p id="loginErr" class="hint"></p>
+</div>
+
+<div id="app" hidden>
+<header>
+  <div class="top">
+    <span class="dot" id="conn" title="Связь с сервером"></span>
+    <span class="logo">Ирина</span>
+    <span class="sys" id="sys"></span>
+  </div>
+  <nav id="nav">
+    <button data-tab="rooms" class="active">Комнаты</button>
+    <button data-tab="cmd">Команды</button>
+    <button data-tab="scenes">Сценарии</button>
+    <button data-tab="settings">Настройки</button>
+    <button data-tab="log">Журнал</button>
+  </nav>
+</header>
+
+<main>
+  <div class="banner" id="restartBanner">
+    <span class="grow">Часть настроек применится после перезапуска Ирины (около минуты).</span>
+    <button class="btn primary" id="restartBtn">Перезапустить</button>
+  </div>
+
+  <section class="tab active" id="tab-rooms">
+    <div class="grid" id="rooms"></div>
+    <p class="hint">Уровень речи хорошо держать в зелёной полосе (1500–5000). Ниже — прибавьте усиление
+      микрофона на странице клиента (Setup), выше 15000 — убавьте. Живой индикатор появится с обновлением прошивки.</p>
+  </section>
+
+  <section class="tab" id="tab-cmd">
+    <div class="card">
+      <form id="cmdForm" class="row" style="margin-top:0">
+        <input id="cmdText" class="grow" placeholder="Команда без имени: включи свет на кухне" autocomplete="off">
+        <select id="cmdRoom" title="Где выполнить и куда ответить"></select>
+        <button class="btn primary">Выполнить</button>
+      </form>
+      <p class="hint">Ответ прозвучит в выбранной комнате. Если Ирина задала вопрос — ответ вводите сюда же.</p>
+    </div>
+    <h2>Последние фразы</h2>
+    <div class="list" id="phrases"></div>
+    <details id="cmdListBox"><summary>Все команды Ирины</summary><div class="list" id="cmdList" style="margin-top:8px"></div></details>
+  </section>
+
+  <section class="tab" id="tab-scenes">
+    <h2>Сценарии</h2>
+    <p class="hint">Фраза запускает шаги по очереди. Шаг — любая команда (как после имени), «скажи: текст» или «пауза: 2».</p>
+    <div class="grid" id="scenes"></div>
+    <div class="row"><button class="btn" id="addScene">+ Сценарий</button></div>
+    <h2>Свои фразы (псевдонимы)</h2>
+    <p class="hint">«зажги» → «включи свет»: «Ирина, зажги на кухне» = «Ирина, включи свет на кухне». Варианты через |.</p>
+    <div class="card" id="aliases"></div>
+    <div class="row">
+      <button class="btn" id="addAlias">+ Фраза</button>
+      <label class="row" style="margin:0"><input type="checkbox" id="quietSteps"> Не произносить ответы шагов</label>
+      <span class="grow"></span>
+      <button class="btn primary" id="saveScenes">Сохранить</button>
+    </div>
+  </section>
+
+  <section class="tab" id="tab-settings">
+    <div id="settings"></div>
+  </section>
+
+  <section class="tab" id="tab-log">
+    <h2>Записи фраз</h2>
+    <div id="dumps"></div>
+    <h2>Журнал сервера</h2>
+    <div class="list log" id="log"></div>
+  </section>
+</main>
+</div>
+
+<div id="toast"></div>
+
+<script>
+"use strict";
+const $ = (s, el = document) => el.querySelector(s);
+const el = (tag, props = {}, ...kids) => {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(props)) {
+    if (k === "class") e.className = v;
+    else if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
+    else if (k in e && k !== "list") e[k] = v;
+    else e.setAttribute(k, v);
+  }
+  for (const k of kids.flat()) if (k != null) e.append(k.nodeType ? k : String(k));
+  return e;
+};
+const store = {
+  get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+  set(k, v) { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch {} },
+};
+function toast(text) {
+  const t = $("#toast"); t.textContent = text; t.classList.add("show");
+  clearTimeout(toast.timer); toast.timer = setTimeout(() => t.classList.remove("show"), 2600);
+}
+const fmtTime = t => new Date(t * 1000).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+function fmtDur(s) {
+  s = Math.floor(s); const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
+  return d ? `${d} д ${h} ч` : h ? `${h} ч ${m} мин` : `${m} мин`;
+}
+
+// ---------------------------------------------------------------- связь с сервером
+let ws, nextId = 1, pending = new Map(), sessionKey = store.get("irene_key"), state = { rooms: [] };
+function connect() {
+  ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ui");
+  ws.onmessage = ev => {
+    const m = JSON.parse(ev.data);
+    if (m.id != null && pending.has(m.id)) {
+      const p = pending.get(m.id); pending.delete(m.id);
+      "error" in m ? p.reject(new Error(m.error)) : p.resolve(m.result);
+    } else if (m.event) onEvent(m.event, m.data);
+  };
+  ws.onclose = () => { $("#conn").classList.remove("on"); for (const p of pending.values()) p.reject(new Error("Нет связи")); pending.clear(); setTimeout(connect, 2000); };
+}
+function call(method, params = {}) {
+  return new Promise((resolve, reject) => {
+    if (!ws || ws.readyState !== 1) return reject(new Error("Нет связи с Ириной"));
+    const id = nextId++; pending.set(id, { resolve, reject });
+    ws.send(JSON.stringify({ id, method, params }));
+  });
+}
+async function act(promise, ok) {
+  try { const r = await promise; if (ok) toast(ok); return r; } catch (e) { toast(e.message); throw e; }
+}
+
+async function onEvent(name, data) {
+  if (name === "hello") {
+    $("#conn").classList.add("on");
+    if (!data.need_login) return start();
+    if (sessionKey) { try { await call("login", { key: sessionKey }); return start(); } catch { sessionKey = null; store.set("irene_key", null); } }
+    $("#app").hidden = true; $("#login").hidden = false; $("#pw").focus();
+  } else if (name === "rooms") { state.rooms = data; renderRooms(); renderRoomSelects(); }
+  else if (name === "phrase") { state.phrases.push(data); state.phrases = state.phrases.slice(-100); renderPhrases(); }
+  else if (name === "log") { state.log.push(data); state.log = state.log.slice(-300); renderLog(); }
+  else if (name === "yandex") renderYandex(data);
+}
+$("#loginForm").addEventListener("submit", async e => {
+  e.preventDefault();
+  try {
+    const r = await call("login", { password: $("#pw").value });
+    sessionKey = r.key; store.set("irene_key", r.key); $("#loginErr").textContent = ""; start();
+  } catch (err) { $("#loginErr").textContent = err.message; }
+});
+
+let started = false;
+async function start() {
+  $("#login").hidden = true; $("#app").hidden = false;
+  const s = await call("state");
+  Object.assign(state, s);
+  renderRooms(); renderRoomSelects(); renderPhrases(); renderLog(); renderSys(s.system); showRestart(s.restart_needed);
+  if (!started) { started = true; setInterval(async () => { try { renderSys(await call("system")); } catch {} }, 15000); }
+  const tab = store.get("irene_tab"); if (tab) openTab(tab);
+}
+
+// ---------------------------------------------------------------- вкладки
+function openTab(name) {
+  if (!$("#tab-" + name)) return;
+  for (const b of $("#nav").children) b.classList.toggle("active", b.dataset.tab === name);
+  for (const s of document.querySelectorAll("section.tab")) s.classList.toggle("active", s.id === "tab-" + name);
+  store.set("irene_tab", name);
+  if (name === "settings") loadSettings();
+  if (name === "scenes") loadScenes();
+  if (name === "log") loadDumps();
+}
+$("#nav").addEventListener("click", e => { if (e.target.dataset.tab) openTab(e.target.dataset.tab); });
+
+function renderSys(s) {
+  if (!s) return;
+  const parts = [];
+  if (s.rss_mb != null) parts.push(`Ирина ${s.rss_mb} МБ`);
+  if (s.mem_avail_mb != null) parts.push(`свободно ${s.mem_avail_mb} из ${s.mem_total_mb} МБ`);
+  if (s.temp_c != null) parts.push(`${s.temp_c} °C`);
+  if (s.disk_free_mb != null) parts.push(`диск ${(s.disk_free_mb / 1024).toFixed(1)} ГБ`);
+  parts.push(`работает ${fmtDur(s.uptime)}`);
+  $("#sys").textContent = parts.join(" · ");
+}
+function showRestart(on) { $("#restartBanner").classList.toggle("show", !!on); }
+$("#restartBtn").addEventListener("click", async () => {
+  await act(call("server.restart"), "Перезапускаю… страница переподключится сама");
+  showRestart(false);
+});
+
+// ---------------------------------------------------------------- комнаты
+let areas = null;
+async function loadAreas() { if (areas === null) { areas = []; try { areas = await call("ha.areas"); } catch {} renderRooms(true); } }
+
+function wifiText(rssi) {
+  if (rssi == null) return null;
+  const q = rssi >= -60 ? ["отличный", "ok"] : rssi >= -70 ? ["хороший", "ok"] : rssi >= -78 ? ["слабый", "warn"] : ["плохой", "warn"];
+  return el("span", {}, `${rssi} дБм `, el("span", { class: "badge " + q[1] }, q[0]));
+}
+
+function spark(levels) {
+  const W = 300, H = 54, max = 8000, n = 20;
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`); svg.setAttribute("class", "spark"); svg.setAttribute("preserveAspectRatio", "none");
+  const y = v => H - Math.min(v, max) / max * (H - 4) - 2;
+  const band = document.createElementNS(svg.namespaceURI, "rect");
+  band.setAttribute("x", 0); band.setAttribute("width", W); band.setAttribute("y", y(5000)); band.setAttribute("height", y(1500) - y(5000));
+  band.setAttribute("fill", "var(--band)"); svg.append(band);
+  const bw = W / n;
+  levels.slice(-n).forEach((v, i) => {
+    const r = document.createElementNS(svg.namespaceURI, "rect");
+    r.setAttribute("x", i * bw + 2); r.setAttribute("width", bw - 4); r.setAttribute("y", y(v)); r.setAttribute("height", H - y(v));
+    r.setAttribute("rx", 2); r.setAttribute("fill", v < 1500 || v > 15000 ? "var(--warn)" : "var(--accent)");
+    const t = document.createElementNS(svg.namespaceURI, "title"); t.textContent = `уровень ${v}`; r.append(t);
+    svg.append(r);
+  });
+  return svg;
+}
+
+const volTimers = {};
+let roomsFocus = false;
+function renderRooms(force) {
+  const box = $("#rooms");
+  if (!force && (roomsFocus || box.contains(document.activeElement) && document.activeElement.tagName !== "BUTTON")) return;
+  box.replaceChildren();
+  if (!state.rooms.length) {
+    box.append(el("div", { class: "card empty" }, "Ни одного клиента. Включите ESP32 и укажите в его настройках адрес приставки и ключ."));
+    return;
+  }
+  for (const r of state.rooms) {
+    const status = r.connected ? (r.speaking ? el("span", { class: "badge" }, "говорит") : el("span", { class: "badge ok" }, "на связи"))
+                               : el("span", { class: "badge off" }, "не подключена");
+    const kv = el("div", { class: "kv" });
+    const add = (k, v) => { if (v != null && v !== "") kv.append(el("span", {}, k), v.nodeType ? v : el("span", {}, v)); };
+    add("Клиент", r.local ? "микрофон приставки" : r.id);
+    if (r.client_name && r.client_name !== r.name) add("Имя в клиенте", r.client_name);
+    add("Прошивка", r.local ? null : r.fw);
+    add("Wi-Fi", wifiText(r.rssi));
+    add("IP", r.ip);
+    add("Запуск", r.reset);
+    if (r.drops) add("Обрывов Wi-Fi", r.drops);
+    if (r.since && r.connected) add("На связи", fmtDur(Date.now() / 1000 - r.since));
+
+    // назначение комнаты
+    const sel = el("select", { class: "grow", title: "Комната = зона Home Assistant" });
+    const opts = new Set([r.name, ...(areas || [])]);
+    for (const a of opts) sel.append(el("option", { value: a, selected: a === r.name }, a));
+    sel.append(el("option", { value: "__other" }, "Другое название…"));
+    sel.addEventListener("focus", () => { roomsFocus = true; loadAreas(); });
+    sel.addEventListener("blur", () => { roomsFocus = false; });
+    sel.addEventListener("change", async () => {
+      roomsFocus = false;
+      let name = sel.value;
+      if (name === "__other") { name = prompt("Название комнаты (как зона в Home Assistant):", r.name); if (!name) return renderRooms(true); }
+      await act(call("room.assign", { id: r.id, name }), `Клиент ${r.id}: комната «${name}»`);
+    });
+
+    const card = el("div", { class: "card" + (r.connected ? "" : " off") },
+      el("h3", {}, el("span", { class: "grow" }, r.name), status),
+      kv,
+      el("div", { class: "row" }, el("span", { class: "sub" }, "Комната"), sel),
+    );
+    if (!r.local) {
+      const vol = el("input", { type: "range", min: 0, max: 100, value: r.volume ?? 70, disabled: !r.connected });
+      const vtxt = el("span", { class: "lvl", style: "width:2.5em;text-align:right" }, r.volume ?? "");
+      vol.addEventListener("input", () => {
+        vtxt.textContent = vol.value; roomsFocus = true;
+        clearTimeout(volTimers[r.id]);
+        volTimers[r.id] = setTimeout(async () => { roomsFocus = false; try { await call("room.volume", { id: r.id, value: +vol.value }); } catch (e) { toast(e.message); } }, 350);
+      });
+      card.append(el("div", { class: "row" }, el("span", { class: "sub" }, "Голос"), vol, vtxt));
+    }
+    if (r.levels && r.levels.length) {
+      const last = r.levels[r.levels.length - 1];
+      card.append(spark(r.levels), el("div", { class: "lvl" }, `Уровень речи последних фраз; последняя — ${last}`));
+    }
+    if (r.connected) {
+      const say = el("input", { class: "grow", placeholder: "Фраза для этой комнаты" });
+      say.addEventListener("focus", () => roomsFocus = true);
+      say.addEventListener("blur", () => roomsFocus = false);
+      const go = async () => { await act(call("room.say", { id: r.id, text: say.value }), "Отправлено"); say.value = ""; };
+      say.addEventListener("keydown", e => { if (e.key === "Enter") go(); });
+      card.append(el("div", { class: "row" }, say, el("button", { class: "btn", onclick: go }, say.value ? "Сказать" : "Проверить звук")));
+    } else if (r.assigned) {
+      card.append(el("div", { class: "row" }, el("span", { class: "grow sub" }, "Назначение сохранено на сервере"),
+        el("button", { class: "btn danger", onclick: () => act(call("room.forget", { id: r.id }), "Забыто") }, "Забыть")));
+    }
+    box.append(card);
+  }
+}
+
+function renderRoomSelects() {
+  for (const sel of document.querySelectorAll("select[data-rooms]")) {
+    const cur = sel.value;
+    sel.replaceChildren(el("option", { value: "" }, "Приставка"));
+    for (const r of state.rooms.filter(r => r.connected && !r.local)) sel.append(el("option", { value: r.id }, r.name));
+    sel.value = [...sel.options].some(o => o.value === cur) ? cur : (store.get("irene_room") || "");
+    if (sel.value === undefined || sel.selectedIndex < 0) sel.value = "";
+  }
+}
+$("#cmdRoom").dataset.rooms = "1";
+$("#cmdRoom").addEventListener("change", e => store.set("irene_room", e.target.value));
+
+// ---------------------------------------------------------------- команды и фразы
+$("#cmdForm").addEventListener("submit", async e => {
+  e.preventDefault();
+  const text = $("#cmdText").value.trim(); if (!text) return;
+  await act(call("command", { text, room: $("#cmdRoom").value }));
+  $("#cmdText").value = "";
+});
+function renderPhrases() {
+  const box = $("#phrases"); box.replaceChildren();
+  const items = (state.phrases || []).slice(-40).reverse();
+  if (!items.length) return box.append(el("div", { class: "empty" }, "Пока ничего не слышно"));
+  for (const p of items)
+    box.append(el("div", { class: "item" + (p.command ? "" : " muted") }, el("time", {}, fmtTime(p.t)),
+      el("span", { class: "who" }, p.room), el("span", { class: "what" }, p.text), el("span", { class: "lvl" }, p.level || "")));
+}
+$("#cmdListBox").addEventListener("toggle", async e => {
+  if (!e.target.open || $("#cmdList").childElementCount) return;
+  const list = await act(call("commands.list"));
+  for (const p of list)
+    $("#cmdList").append(el("div", { class: "item" }, el("span", { class: "who", style: "width:11em" }, p.name),
+      el("span", { class: "what" }, p.commands.map(c => c.split("|")[0]).join(" · "))));
+});
+
+// ---------------------------------------------------------------- журнал и записи
+function renderLog() {
+  const box = $("#log"); box.replaceChildren();
+  const items = (state.log || []).slice(-150).reverse();
+  if (!items.length) return box.append(el("div", { class: "empty" }, "Журнал пуст"));
+  for (const l of items) box.append(el("div", { class: "item " + l.level }, el("time", {}, fmtTime(l.t)), el("span", { class: "what" }, l.text)));
+}
+async function loadDumps() {
+  const box = $("#dumps"); box.replaceChildren();
+  let d; try { d = await call("dump.list"); } catch (e) { return; }
+  if (!d.enabled) {
+    return box.append(el("p", { class: "hint" }, "Запись фраз выключена. Включите в «Настройки → Сервер и клиенты → Записывать фразы в WAV» — пригодится, если Ирина плохо понимает какую-то комнату."));
+  }
+  if (!d.files.length) return box.append(el("p", { class: "hint" }, "Записей пока нет — скажите что-нибудь."));
+  const list = el("div", { class: "list" });
+  for (const f of d.files.slice(0, 40)) {
+    const m = f.name.match(/^(\d{8})-(\d{2})(\d{2})(\d{2})_(.+?)_(\d+)_(.*)\.wav$/);
+    const label = m ? `${m[2]}:${m[3]}:${m[4]} · ${m[5]} · уровень ${m[6]} · «${m[7].replace(/_/g, " ")}»` : f.name;
+    const audio = el("audio", { controls: true, preload: "none", src: `/dump/${encodeURIComponent(f.name)}?k=${encodeURIComponent(sessionKey || "")}` });
+    list.append(el("div", { class: "item", style: "flex-wrap:wrap" }, el("span", { class: "what" }, label), audio));
+  }
+  box.append(list);
+}
+
+// ---------------------------------------------------------------- настройки
+async function loadSettings() {
+  const box = $("#settings");
+  const data = await act(call("settings.get"));
+  box.replaceChildren();
+  showRestart(data.restart_needed);
+  for (const sec of data.sections) {
+    const form = el("div", { class: "form" });
+    const inputs = {};
+    for (const f of sec.fields) {
+      let input;
+      if (f.type === "bool") input = el("input", { type: "checkbox", checked: !!f.value });
+      else if (f.type === "select") {
+        input = el("select");
+        for (const [v, t] of f.choices) input.append(el("option", { value: v, selected: String(v) === String(f.value) }, t));
+      } else if (f.type === "number") input = el("input", { type: "number", value: f.value ?? "", step: f.step || 1 });
+      else if (f.type === "secret") input = el("input", { type: "password", autocomplete: "new-password",
+        placeholder: f.is_set ? "задан — оставьте пустым, чтобы не менять" : "не задан" });
+      else input = el("input", { type: "text", value: f.value ?? "" });
+      inputs[f.key] = [f, input];
+      form.append(el("label", {}, f.label), f.type === "bool" ? el("div", {}, input) : input);
+      if (f.help) form.append(el("div", { class: "hint help" }, f.help));
+    }
+    const save = el("button", { class: "btn primary" }, "Сохранить");
+    save.addEventListener("click", async () => {
+      const values = {};
+      for (const [k, [f, i]] of Object.entries(inputs)) values[k] = f.type === "bool" ? i.checked : i.value;
+      const r = await act(call("settings.set", { section: sec.id, values }));
+      toast(r.changed.length ? "Сохранено" + (r.restart_needed ? " — нужен перезапуск" : "") : "Ничего не изменилось");
+      showRestart(r.restart_needed);
+      if (r.changed.length) loadSettings();
+    });
+    const actions = el("div", { class: "row" }, el("span", { class: "grow" }));
+    if (sec.id === "voice") {
+      const room = el("select"); room.dataset.rooms = "1";
+      actions.prepend(room, el("button", { class: "btn", onclick: () => act(call("voice.test", { speakerId: inputs.speakerId[1].value, room: room.value }), "Слушайте") }, "Послушать"));
+    }
+    if (sec.id === "music") actions.prepend(el("button", { class: "btn", onclick: yandexLogin }, "Войти в Яндекс"), el("span", { id: "yandexBox" }));
+    actions.append(save);
+    box.append(el("h2", {}, sec.title), el("div", { class: "card" }, form, actions));
+  }
+  renderRoomSelects();
+}
+async function yandexLogin() { renderYandex(await act(call("yandex.login"))); }
+function renderYandex(d) {
+  const box = $("#yandexBox"); if (!box) return;
+  box.replaceChildren();
+  if (d.state === "waiting") box.append(el("span", {}, "Откройте ", el("a", { href: d.url, target: "_blank" }, d.url), " и введите код ", el("span", { class: "code" }, d.code)));
+  else if (d.state === "done") { box.append("Вход выполнен"); showRestart(true); }
+  else if (d.state === "error") box.append("Ошибка: " + d.message);
+}
+
+// ---------------------------------------------------------------- сценарии
+function sceneCard(phrase = "", steps = []) {
+  const name = el("input", { class: "grow", value: phrase, placeholder: "Фраза: спокойной ночи" });
+  const body = el("textarea", { rows: Math.max(3, steps.length + 1), placeholder: "выключи весь свет\nвыключи музыку\nскажи: Спокойной ночи!" });
+  body.value = steps.join("\n");
+  const card = el("div", { class: "card scene" },
+    el("div", { class: "row", style: "margin-top:0" }, name,
+      el("button", { class: "btn", title: "Выполнить сохранённый сценарий", onclick: () => act(call("command", { text: name.value, room: $("#cmdRoom").value }), "Выполняю") }, "▶"),
+      el("button", { class: "btn danger", title: "Удалить", onclick: () => card.remove() }, "✕")),
+    el("div", { style: "margin-top:8px" }, body));
+  return card;
+}
+function aliasRow(from = "", to = "") {
+  const row = el("div", { class: "pair" },
+    el("input", { value: from, placeholder: "зажги|сделай светло" }), el("span", { class: "sub" }, "→"),
+    el("input", { value: to, placeholder: "включи свет" }),
+    el("button", { class: "btn danger", onclick: () => row.remove() }, "✕"));
+  return row;
+}
+async function loadScenes() {
+  let d; try { d = await call("scenes.get"); } catch (e) { $("#scenes").replaceChildren(el("p", { class: "hint" }, e.message)); return; }
+  $("#scenes").replaceChildren(...Object.entries(d.scenes).map(([k, v]) => sceneCard(k, v)));
+  $("#aliases").replaceChildren(...Object.entries(d.aliases).map(([k, v]) => aliasRow(k, v)));
+  if (!Object.keys(d.aliases).length) $("#aliases").append(aliasRow());
+  $("#quietSteps").checked = d.quiet_steps;
+}
+$("#addScene").addEventListener("click", () => { const c = sceneCard(); $("#scenes").append(c); $("input", c).focus(); });
+$("#addAlias").addEventListener("click", () => $("#aliases").append(aliasRow()));
+$("#saveScenes").addEventListener("click", async () => {
+  const scenes = {}, aliases = {};
+  for (const c of document.querySelectorAll("#scenes .scene")) {
+    const k = $("input", c).value.trim(); if (k) scenes[k] = $("textarea", c).value.split("\n");
+  }
+  for (const r of document.querySelectorAll("#aliases .pair")) {
+    const [a, b] = r.querySelectorAll("input"); if (a.value.trim() && b.value.trim()) aliases[a.value] = b.value;
+  }
+  await act(call("scenes.set", { scenes, aliases, quiet_steps: $("#quietSteps").checked }), "Сохранено — уже работает");
+  loadScenes();
+});
+
+connect();
+</script>
+</body>
+</html>

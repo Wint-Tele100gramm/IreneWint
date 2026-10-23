@@ -19,6 +19,7 @@
 
 import argparse
 import asyncio
+import collections
 import difflib
 import json
 import logging
@@ -56,7 +57,11 @@ DEFAULT_OPTIONS = {
     "dump_keep": 300,            # сколько последних WAV хранить в этой папке
     "tts_cache_max_mb": 300,     # кэш озвучки: не больше стольких МБ...
     "tts_cache_max_days": 90,    # ...и без фраз, не звучавших столько дней (0 — без ограничения)
+    "web_ui": True,              # веб-интерфейс http://<IP приставки>:<port>/
+    "ui_password": "",           # пароль страницы; пусто — ключ клиентов (token)
+    "room_names": {},            # id клиента -> комната (зона HA), назначается на странице; важнее имени из клиента
 }
+OPTIONS_FILE = os.path.splitext(os.path.abspath(__file__))[0] + ".json"
 
 
 # ------------------------------------------------------------------ комнаты
@@ -81,6 +86,9 @@ class Room:
         self.armed_until = 0.0
         self.fragment = None                  # (текст, время) — короткий обрывок фразы без имени
         self.dump = bytearray() if server.options.get("dump_audio") else None
+        self.client_name = name               # имя комнаты из настроек клиента (name — может переназначить сервер)
+        self.info = {}                        # прошивка, Wi-Fi, IP — для веб-интерфейса
+        self.levels = collections.deque(maxlen=20)   # уровни последних фраз
         self.thread = threading.Thread(target=self._recognize_loop, name=f"asr-{room_id}", daemon=True)
         self.thread.start()
 
@@ -99,6 +107,7 @@ class Room:
 
     def end_segment(self, level=0):
         self.level = level
+        self.levels.append(level)
         self.audio_q.put("END")
 
     def close(self):
@@ -271,6 +280,45 @@ class RoomServer:
         threading.Thread(target=self._ticker, name="timers", daemon=True).start()
         threading.Thread(target=self._cache_cleaner, name="tts-cache", daemon=True).start()
 
+        self.ui = None
+        if options.get("web_ui", True):
+            from web_ui import WebUI
+            self.ui = WebUI(self)
+
+    def run_in_commands(self, room, fn, wait=False, timeout=60):
+        """Выполнить fn в потоке команд (ядро не потокобезопасно) от имени комнаты room (None — приставка)."""
+        if not wait:
+            self.cmd_q.put(("call", room, fn))
+            return
+        done, box = threading.Event(), {}
+
+        def run():
+            try:
+                box["result"] = fn()
+            except Exception as e:
+                box["error"] = e
+            finally:
+                done.set()
+        self.cmd_q.put(("call", room, run))
+        if not done.wait(timeout):
+            raise TimeoutError("Ирина занята — команда не выполнилась")
+        if "error" in box:
+            raise box["error"]
+        return box.get("result")
+
+    def save_options(self):
+        with open(OPTIONS_FILE, "w", encoding="utf-8") as f:
+            json.dump(self.options, f, sort_keys=True, indent=4, ensure_ascii=False)
+
+    def apply_live_options(self):
+        """Настройки, которые можно применить без перезапуска."""
+        dump = bool(self.options.get("dump_audio"))
+        for room in self.rooms.values():
+            if dump and room.dump is None:
+                room.dump = bytearray()
+            elif not dump:
+                room.dump = None
+
     # --- утилиты ---
     def has_name(self, text: str) -> bool:
         words = text.split()
@@ -313,6 +361,8 @@ class RoomServer:
     # --- выбор комнаты: одну фразу могли услышать несколько клиентов ---
     def submit(self, room: Room, text: str):
         in_context = self.core.context is not None
+        if self.ui:
+            self.ui.on_phrase(room, text, in_context or self.has_name(text))
         if in_context or self.has_name(text):
             logger.info(f"{room.name}: «{text}» (уровень {room.level})")
         elif self.options.get("log_heard"):
@@ -508,6 +558,9 @@ class RoomServer:
 
     # --- WebSocket ---
     async def handle_client(self, ws):
+        if self.ui and ws.request.path.split("?")[0] == "/ui":
+            await self.ui.handle(ws)              # страница веб-интерфейса
+            return
         room = None
         try:
             hello = json.loads(await asyncio.wait_for(ws.recv(), timeout=10))
@@ -521,11 +574,16 @@ class RoomServer:
                 await ws.send(json.dumps({"type": "error", "message": "rate must be 16000"}))
                 return
             room_id = str(hello.get("room") or ws.remote_address[0])
-            name = str(hello.get("name") or room_id)
+            client_name = str(hello.get("name") or room_id)
+            name = (self.options.get("room_names") or {}).get(room_id) or client_name
             old = self.rooms.get(room_id)
             if old:
                 old.close()
             room = Room(self, room_id, name, ws=ws)
+            room.client_name = client_name
+            room.info = {"fw": hello.get("fw"), "rssi": hello.get("rssi"), "reset": hello.get("reset"),
+                         "drops": hello.get("drops"), "ip": ws.remote_address[0], "since": time.time(),
+                         "client_name": client_name}
             if isinstance(hello.get("volume"), int):
                 room.volume = max(0, min(100, hello["volume"]))
             self.rooms[room_id] = room
@@ -566,8 +624,12 @@ class RoomServer:
         if self.options.get("local_room"):
             self._start_local_room(self.options["local_room"])
         async with serve(self.handle_client, self.options["host"], self.options["port"],
-                         max_size=2 ** 20, ping_interval=20, ping_timeout=20) as srv:
+                         max_size=2 ** 20, ping_interval=20, ping_timeout=20,
+                         process_request=self.ui.process_request if self.ui else None) as srv:
             print(f"Сервер комнат Ирины слушает ws://{self.options['host']}:{self.options['port']}/")
+            if self.ui:
+                asyncio.ensure_future(self.ui.ticker())
+                logger.warning(f"Веб-интерфейс: http://<IP приставки>:{self.options['port']}/")
             if not self.options["token"]:
                 print("ВНИМАНИЕ: token не задан в runva_rooms.json — подключиться может любой в сети")
             await srv.serve_forever()
@@ -575,7 +637,9 @@ class RoomServer:
     # --- микрофон самой приставки как ещё одна комната ---
     def _start_local_room(self, name):
         import sounddevice as sd
+        name = (self.options.get("room_names") or {}).get("local") or name
         room = Room(self, "local", name, local=True)
+        room.info = {"fw": "микрофон приставки", "since": time.time()}
         self.rooms["local"] = room
         levels = []
 
