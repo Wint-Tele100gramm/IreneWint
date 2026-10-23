@@ -60,6 +60,9 @@ button:disabled { opacity: .5; cursor: default; }
 .badge.off { background: transparent; color: var(--muted); border: 1px solid var(--line); }
 .badge.warn { background: transparent; color: var(--warn); border: 1px solid var(--warn); }
 .spark { width: 100%; height: 54px; display: block; margin-top: 8px; }
+.meter { position: relative; height: 14px; border-radius: 7px; background: var(--line); margin-top: 12px; overflow: hidden; }
+.meter .fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: var(--accent); transition: width .2s; }
+.meter .band { position: absolute; top: 0; bottom: 0; left: 51.1%; width: 22.7%; border-left: 2px solid var(--ok); border-right: 2px solid var(--ok); }
 .hint { color: var(--muted); font-size: 13px; margin: 4px 0 0; }
 .banner { background: var(--accent-soft); border: 1px solid var(--accent); border-radius: 10px;
   padding: 10px 14px; display: none; align-items: center; gap: 12px; margin-bottom: 14px; }
@@ -129,7 +132,8 @@ audio { height: 32px; max-width: 100%; }
   <section class="tab active" id="tab-rooms">
     <div class="grid" id="rooms"></div>
     <p class="hint">Уровень речи хорошо держать в зелёной полосе (1500–5000). Ниже — прибавьте усиление
-      микрофона на странице клиента (Setup), выше 15000 — убавьте. Живой индикатор появится с обновлением прошивки.</p>
+      микрофона, выше 15000 — убавьте. У клиентов ESP32 усиление пока меняется на их странице (Setup),
+      живой индикатор для них появится с обновлением прошивки.</p>
   </section>
 
   <section class="tab" id="tab-cmd">
@@ -236,6 +240,7 @@ async function onEvent(name, data) {
     if (sessionKey) { try { await call("login", { key: sessionKey }); return start(); } catch { sessionKey = null; store.set("irene_key", null); } }
     $("#app").hidden = true; $("#login").hidden = false; $("#pw").focus();
   } else if (name === "rooms") { state.rooms = data; renderRooms(); renderRoomSelects(); }
+  else if (name === "meter") { for (const [id, v] of Object.entries(data)) setMeter(id, v); }
   else if (name === "phrase") { state.phrases.push(data); state.phrases = state.phrases.slice(-100); renderPhrases(); }
   else if (name === "log") { state.log.push(data); state.log = state.log.slice(-300); renderLog(); }
   else if (name === "yandex") renderYandex(data);
@@ -315,7 +320,28 @@ function spark(levels) {
   return svg;
 }
 
-const volTimers = {};
+const volTimers = {}, meters = {};
+// ползунок с отложенной отправкой (чтобы не слать каждое движение)
+function slider(label, value, min, max, unit, disabled, send, key) {
+  const input = el("input", { type: "range", min, max, value, disabled });
+  const txt = el("span", { class: "lvl", style: "width:3.5em;text-align:right" }, value + unit);
+  input.addEventListener("input", () => {
+    txt.textContent = input.value + unit; roomsFocus = true;
+    clearTimeout(volTimers[key]);
+    volTimers[key] = setTimeout(async () => { roomsFocus = false; try { await send(+input.value); } catch (e) { toast(e.message); } }, 350);
+  });
+  return el("div", { class: "row" }, el("span", { class: "sub", style: "width:5.5em" }, label), input, txt);
+}
+// живой индикатор: шкала логарифмическая, 100…20000; зелёная полоса — хорошая речь (1500–5000)
+const meterPos = v => Math.max(0, Math.min(100, (Math.log10(Math.max(v, 100)) - 2) / (Math.log10(20000) - 2) * 100));
+function setMeter(id, v) {
+  meters[id] = v;
+  const m = document.querySelector(`[data-meter="${CSS.escape(id)}"]`); if (!m) return;
+  m.querySelector(".fill").style.width = meterPos(v) + "%";
+  m.querySelector(".fill").style.background = v > 15000 ? "var(--bad)" : v >= 1500 ? "var(--ok)" : "var(--accent)";
+  const t = document.querySelector(`[data-meter-text="${CSS.escape(id)}"]`);
+  if (t) t.textContent = `Уровень микрофона сейчас: ${v}` + (v > 15000 ? " — слишком громко" : "");
+}
 let roomsFocus = false;
 function renderRooms(force) {
   const box = $("#rooms");
@@ -330,7 +356,7 @@ function renderRooms(force) {
                                : el("span", { class: "badge off" }, "не подключена");
     const kv = el("div", { class: "kv" });
     const add = (k, v) => { if (v != null && v !== "") kv.append(el("span", {}, k), v.nodeType ? v : el("span", {}, v)); };
-    add("Клиент", r.local ? "микрофон приставки" : r.id);
+    add("Клиент", r.local ? "этот компьютер: микрофон и динамик" : r.id);
     if (r.client_name && r.client_name !== r.name) add("Имя в клиенте", r.client_name);
     add("Прошивка", r.local ? null : r.fw);
     add("Wi-Fi", wifiText(r.rssi));
@@ -358,15 +384,15 @@ function renderRooms(force) {
       kv,
       el("div", { class: "row" }, el("span", { class: "sub" }, "Комната"), sel),
     );
-    if (!r.local) {
-      const vol = el("input", { type: "range", min: 0, max: 100, value: r.volume ?? 70, disabled: !r.connected });
-      const vtxt = el("span", { class: "lvl", style: "width:2.5em;text-align:right" }, r.volume ?? "");
-      vol.addEventListener("input", () => {
-        vtxt.textContent = vol.value; roomsFocus = true;
-        clearTimeout(volTimers[r.id]);
-        volTimers[r.id] = setTimeout(async () => { roomsFocus = false; try { await call("room.volume", { id: r.id, value: +vol.value }); } catch (e) { toast(e.message); } }, 350);
-      });
-      card.append(el("div", { class: "row" }, el("span", { class: "sub" }, "Голос"), vol, vtxt));
+    card.append(slider("Голос", r.volume ?? 70, 0, 100, "", !r.connected, v => call("room.volume", { id: r.id, value: v }), r.id + "v"));
+    if (r.local) {
+      card.append(slider("Микрофон", r.mic_gain_db ?? 0, -10, 30, " дБ", !r.connected, v => call("room.mic_gain", { id: r.id, value: v }), r.id + "g"));
+      if (r.connected) {
+        const meter = el("div", { class: "meter", "data-meter": r.id },
+          el("div", { class: "fill" }), el("div", { class: "band" }));
+        card.append(meter, el("div", { class: "lvl", "data-meter-text": r.id }, "Уровень микрофона сейчас"));
+        if (meters[r.id] != null) setMeter(r.id, meters[r.id]);
+      }
     }
     if (r.levels && r.levels.length) {
       const last = r.levels[r.levels.length - 1];

@@ -59,7 +59,9 @@ DEFAULT_OPTIONS = {
     "tts_cache_max_days": 90,    # ...и без фраз, не звучавших столько дней (0 — без ограничения)
     "web_ui": True,              # веб-интерфейс http://<IP приставки>:<port>/
     "ui_password": "",           # пароль страницы; пусто — ключ клиентов (token)
-    "room_names": {},            # id клиента -> комната (зона HA), назначается на странице; важнее имени из клиента
+    "room_names": {},
+    "local_volume": 100,         # громкость голоса на динамике приставки/ноутбука, % (поверх системной)
+    "local_mic_gain_db": 0,      # усиление микрофона приставки/ноутбука, дБ (тихие встроенные микрофоны: 10–20)            # id клиента -> комната (зона HA), назначается на странице; важнее имени из клиента
 }
 OPTIONS_FILE = os.path.splitext(os.path.abspath(__file__))[0] + ".json"
 
@@ -147,6 +149,7 @@ class Room:
                     if self.local:
                         self.wake_sent = False
                         if text:
+                            self.levels.append(self.level)
                             self._dump_segment(text)
                             self._phrase(text)
                     elif text:
@@ -450,17 +453,43 @@ class RoomServer:
         def routed_wav(path):
             # звуки плагинов (сигнал таймера и т.п.) — тоже в комнату, а не в динамик приставки
             if self.say_everywhere and not self._in_broadcast:
-                self._broadcast_audio(*limit_rate(*read_wav_mono16(path)), local_fn=lambda: local_wav(path))
+                self._broadcast_audio(*limit_rate(*read_wav_mono16(path)),
+                                      local_fn=lambda: self._local_wav_volume(path))
                 return
             room = core.current_room
             if room is None or room.local:
-                return self._play_local(room, local_wav, path)
+                return self._play_local(room, self._local_wav_volume, path)
             if room.connected:
                 room.play_pcm(*limit_rate(*read_wav_mono16(path)))
 
         core.play_voice_assistant_speech = routed
         core.play_wav = routed_wav
         core.say_in_all_rooms = self.broadcast
+
+    def _local_wav_volume(self, path):
+        """Проиграть WAV на динамике приставки с громкостью local_volume."""
+        volume = max(0, min(100, int(self.options.get("local_volume", 100))))
+        if volume >= 100:
+            return self._local_wav(path)
+        tmp = os.path.join(self.core.tmpdir, f"vol_{threading.get_ident()}.wav")
+        try:
+            rate, pcm = read_wav_mono16(path)
+            a = (np.frombuffer(pcm, dtype="<i2").astype(np.float32) * (volume / 100.0) ** 2).astype("<i2")
+            with wave.open(tmp, "wb") as w:
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(rate)
+                w.writeframes(a.tobytes())
+        except Exception as e:
+            logger.debug(f"громкость: {e}")
+            return self._local_wav(path)
+        try:
+            return self._local_wav(tmp)
+        finally:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
 
     @staticmethod
     def _play_local(room, fn, arg):
@@ -639,14 +668,20 @@ class RoomServer:
         import sounddevice as sd
         name = (self.options.get("room_names") or {}).get("local") or name
         room = Room(self, "local", name, local=True)
-        room.info = {"fw": "микрофон приставки", "since": time.time()}
+        room.info = {"fw": "микрофон и динамик этого компьютера", "since": time.time()}
+        room.volume = int(self.options.get("local_volume", 100))
         self.rooms["local"] = room
         levels = []
 
         def callback(indata, frames, t, status):
-            pcm = bytes(indata)
-            samples = np.frombuffer(pcm, dtype=np.int16)
-            levels.append(int(np.sqrt(np.mean(samples.astype(np.float32) ** 2))))
+            samples = np.frombuffer(bytes(indata), dtype=np.int16).astype(np.float32)
+            gain_db = float(self.options.get("local_mic_gain_db", 0) or 0)
+            if gain_db:
+                samples = np.clip(samples * 10 ** (gain_db / 20), -32768, 32767)
+            pcm = samples.astype("<i2").tobytes()
+            rms = int(np.sqrt(np.mean(samples ** 2)))
+            room.live_level = rms                  # для индикатора в веб-интерфейсе
+            levels.append(rms)
             del levels[:-12]                       # ~3 секунды по 0.25 с
             room.level = max(levels)
             room.feed(pcm)

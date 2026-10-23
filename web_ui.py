@@ -144,9 +144,18 @@ class WebUI:
         self.emit("phrase", item)
 
     async def ticker(self):
+        n = 0
         while True:
-            await asyncio.sleep(2)
-            if self.clients:
+            await asyncio.sleep(0.25)
+            n += 1
+            if not self.clients:
+                continue
+            # живой уровень микрофона (пока у микрофона этого компьютера) — 4 раза в секунду
+            live = {r.id: r.live_level for r in list(self.server.rooms.values())
+                    if r.connected and getattr(r, "live_level", None) is not None}
+            if live:
+                self._send_all(json.dumps({"event": "meter", "data": live}))
+            if n % 8 == 0:
                 self._send_all(json.dumps({"event": "rooms", "data": self.rooms_state()}, ensure_ascii=False))
 
     # ---------------------------------------------------------------- HTTP (страница и записи)
@@ -248,6 +257,7 @@ class WebUI:
                 "id": room.id, "name": room.name, "connected": room.connected, "local": room.local,
                 "volume": room.volume, "speaking": room.speaking, "levels": list(getattr(room, "levels", [])),
                 "assigned": room.id in names, **info,
+                "mic_gain_db": srv.options.get("local_mic_gain_db", 0) if room.local else None,
             })
         for rid, name in names.items():
             if rid not in seen:
@@ -302,11 +312,23 @@ class WebUI:
 
     def api_room_volume(self, params):
         room = self._room(params["id"])
-        if room.local:
-            raise ValueError("Громкость приставки меняется в её звуковых настройках")
         room.volume = max(0, min(100, int(params["value"])))
-        room.send_json({"type": "volume", "value": room.volume})
+        if room.local:
+            self.server.options["local_volume"] = room.volume     # громкость голоса на этом компьютере
+            self.server.save_options()
+        else:
+            room.send_json({"type": "volume", "value": room.volume})
         return room.volume
+
+    def api_room_mic_gain(self, params):
+        """Усиление микрофона. Пока только у микрофона этого компьютера; клиентам — с новой прошивкой."""
+        room = self._room(params["id"])
+        if not room.local:
+            raise ValueError("Усиление клиента меняется на его странице (Setup)")
+        value = max(-10, min(30, int(params["value"])))
+        self.server.options["local_mic_gain_db"] = value
+        self.server.save_options()
+        return value
 
     def api_room_say(self, params):
         room = self.server.rooms.get(params.get("id") or "")
