@@ -147,15 +147,28 @@ class WebUI:
         while True:
             await asyncio.sleep(0.25)
             n += 1
+            self._sync_meters()
             if not self.clients:
                 continue
-            # живой уровень микрофона (пока у микрофона этого компьютера) — 4 раза в секунду
-            live = {r.id: r.live_level for r in list(self.server.rooms.values())
-                    if r.connected and getattr(r, "live_level", None) is not None}
+            # живой уровень микрофонов — 4 раза в секунду: [уровень, шум]
+            live = {r.id: [r.live_level, r.info.get("noise")] for r in list(self.server.rooms.values())
+                    if r.connected and r.live_level is not None}
             if live:
                 self._send_all(json.dumps({"event": "meter", "data": live}))
             if n % 8 == 0:
                 self._send_all(json.dumps({"event": "rooms", "data": self.rooms_state()}, ensure_ascii=False))
+
+    def _sync_meters(self):
+        """Клиенты шлют живой уровень, только пока открыта страница: зря не нагружаем Wi-Fi."""
+        want = bool(self.clients)
+        for room in list(self.server.rooms.values()):
+            if room.local or "meter" not in room.caps or not room.connected:
+                continue
+            if room.meter_enabled != want:
+                room.meter_enabled = want
+                room.send_json({"type": "meter", "enable": want})
+                if not want:
+                    room.live_level = None
 
     # ---------------------------------------------------------------- HTTP (страница и записи)
     def password(self):
@@ -256,6 +269,7 @@ class WebUI:
                 "id": room.id, "name": room.name, "connected": room.connected, "local": room.local,
                 "volume": room.volume, "speaking": room.speaking, "levels": list(getattr(room, "levels", [])),
                 "assigned": room.id in names, **info,
+                "caps": sorted(room.caps),
                 "mic_gain_db": srv.options.get("local_mic_gain_db", 0) if room.local else None,
             })
         for rid, name in names.items():
@@ -328,6 +342,25 @@ class WebUI:
         self.server.options["local_mic_gain_db"] = value
         self.server.save_options()
         return value
+
+    def api_room_mic(self, params):
+        """Настройки микрофона клиента (прошивка 2.0+): применяются сразу, без перезагрузки клиента."""
+        room = self._room(params["id"])
+        if "config" not in room.caps:
+            raise ValueError("Прошивка клиента не умеет получать настройки — обновите её до 2.0")
+        limits = {"gain": (0, 30), "vad": (30, 5000), "hang": (300, 3000), "agc_max": (0, 30)}
+        cfg = {}
+        for key, (lo, hi) in limits.items():
+            if key in params:
+                cfg[key] = max(lo, min(hi, int(params[key])))
+        if "agc" in params:
+            cfg["agc"] = bool(params["agc"])
+        if not cfg:
+            raise ValueError("Нечего менять")
+        room.send_json({"type": "config", **cfg})
+        room.info.update(cfg)
+        logger.info(f"{room.name}: настройки микрофона {cfg}")
+        return cfg
 
     def api_room_say(self, params):
         room = self.server.rooms.get(params.get("id") or "")

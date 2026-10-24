@@ -62,6 +62,7 @@ button:disabled { opacity: .5; cursor: default; }
 .spark { width: 100%; height: 54px; display: block; margin-top: 8px; }
 .meter { position: relative; height: 14px; border-radius: 7px; background: var(--line); margin-top: 12px; overflow: hidden; }
 .meter .fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: var(--accent); transition: width .2s; }
+.meter .thr { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--warn); display: none; }
 .meter .band { position: absolute; top: 0; bottom: 0; left: 51.1%; width: 22.7%; border-left: 2px solid var(--ok); border-right: 2px solid var(--ok); }
 .hint { color: var(--muted); font-size: 13px; margin: 4px 0 0; }
 .banner { background: var(--accent-soft); border: 1px solid var(--accent); border-radius: 10px;
@@ -132,8 +133,8 @@ audio { height: 32px; max-width: 100%; }
   <section class="tab active" id="tab-rooms">
     <div class="grid" id="rooms"></div>
     <p class="hint">Уровень речи хорошо держать в зелёной полосе (1500–5000). Ниже — прибавьте усиление
-      микрофона, выше 15000 — убавьте. У клиентов ESP32 усиление пока меняется на их странице (Setup),
-      живой индикатор для них появится с обновлением прошивки.</p>
+      микрофона (или включите автоусиление), выше 15000 — убавьте. Оранжевая риска — с какого уровня клиент считает
+      звук речью. Клиенты с прошивкой до 2.0 настраиваются на своей странице (Setup).</p>
   </section>
 
   <section class="tab" id="tab-cmd">
@@ -240,7 +241,7 @@ async function onEvent(name, data) {
     if (sessionKey) { try { await call("login", { key: sessionKey }); return start(); } catch { sessionKey = null; store.set("irene_key", null); } }
     $("#app").hidden = true; $("#login").hidden = false; $("#pw").focus();
   } else if (name === "rooms") { state.rooms = data; renderRooms(); renderRoomSelects(); }
-  else if (name === "meter") { for (const [id, v] of Object.entries(data)) setMeter(id, v); }
+  else if (name === "meter") { for (const [id, v] of Object.entries(data)) setMeter(id, ...(Array.isArray(v) ? v : [v])); }
   else if (name === "phrase") { state.phrases.push(data); state.phrases = state.phrases.slice(-100); renderPhrases(); }
   else if (name === "log") { state.log.push(data); state.log = state.log.slice(-300); renderLog(); }
   else if (name === "yandex") renderYandex(data);
@@ -324,7 +325,7 @@ const volTimers = {}, meters = {};
 // ползунок с отложенной отправкой (чтобы не слать каждое движение)
 function slider(label, value, min, max, unit, disabled, send, key) {
   const input = el("input", { type: "range", min, max, value, disabled });
-  const txt = el("span", { class: "lvl", style: "width:3.5em;text-align:right" }, value + unit);
+  const txt = el("span", { class: "lvl", style: "width:4.5em;text-align:right;white-space:nowrap" }, value + unit);
   input.addEventListener("input", () => {
     txt.textContent = input.value + unit; roomsFocus = true;
     clearTimeout(volTimers[key]);
@@ -334,13 +335,19 @@ function slider(label, value, min, max, unit, disabled, send, key) {
 }
 // живой индикатор: шкала логарифмическая, 100…20000; зелёная полоса — хорошая речь (1500–5000)
 const meterPos = v => Math.max(0, Math.min(100, (Math.log10(Math.max(v, 100)) - 2) / (Math.log10(20000) - 2) * 100));
-function setMeter(id, v) {
-  meters[id] = v;
+const meterThr = {};
+function setMeter(id, v, noise) {
+  meters[id] = [v, noise];
   const m = document.querySelector(`[data-meter="${CSS.escape(id)}"]`); if (!m) return;
   m.querySelector(".fill").style.width = meterPos(v) + "%";
   m.querySelector(".fill").style.background = v > 15000 ? "var(--bad)" : v >= 1500 ? "var(--ok)" : "var(--accent)";
+  // риска порога: речь начнётся с max(порог, шум × 3)
+  const thrEl = m.querySelector(".thr");
+  const thr = meterThr[id] != null ? Math.max(meterThr[id], (noise || 0) * 3) : null;
+  if (thrEl) { thrEl.style.display = thr ? "block" : "none"; if (thr) thrEl.style.left = meterPos(thr) + "%"; }
   const t = document.querySelector(`[data-meter-text="${CSS.escape(id)}"]`);
-  if (t) t.textContent = `Уровень микрофона сейчас: ${v}` + (v > 15000 ? " — слишком громко" : "");
+  if (t) t.textContent = `Сейчас ${v}` + (noise != null ? `, шум ${noise}` : "") + (thr ? `, речь от ${Math.round(thr)}` : "")
+    + (v > 15000 ? " — слишком громко" : "");
 }
 let roomsFocus = false;
 function renderRooms(force) {
@@ -358,7 +365,7 @@ function renderRooms(force) {
     const add = (k, v) => { if (v != null && v !== "") kv.append(el("span", {}, k), v.nodeType ? v : el("span", {}, v)); };
     add("Клиент", r.local ? "этот компьютер: микрофон и динамик" : r.id);
     if (r.client_name && r.client_name !== r.name) add("Имя в клиенте", r.client_name);
-    add("Прошивка", r.local ? null : r.fw);
+    add("Прошивка", r.local ? null : [r.fw, r.chip, r.psram ? `PSRAM ${Math.round(r.psram / 1024)} МБ` : null].filter(Boolean).join(" · "));
     add("Wi-Fi", wifiText(r.rssi));
     add("IP", r.ip);
     add("Запуск", r.reset);
@@ -385,14 +392,27 @@ function renderRooms(force) {
       el("div", { class: "row" }, el("span", { class: "sub" }, "Комната"), sel),
     );
     card.append(slider("Голос", r.volume ?? 70, 0, 100, "", !r.connected, v => call("room.volume", { id: r.id, value: v }), r.id + "v"));
+    const remoteCfg = !r.local && (r.caps || []).includes("config");
     if (r.local) {
       card.append(slider("Микрофон", r.mic_gain_db ?? 0, -10, 30, " дБ", !r.connected, v => call("room.mic_gain", { id: r.id, value: v }), r.id + "g"));
-      if (r.connected) {
-        const meter = el("div", { class: "meter", "data-meter": r.id },
-          el("div", { class: "fill" }), el("div", { class: "band" }));
-        card.append(meter, el("div", { class: "lvl", "data-meter-text": r.id }, "Уровень микрофона сейчас"));
-        if (meters[r.id] != null) setMeter(r.id, meters[r.id]);
-      }
+    } else if (remoteCfg && r.connected) {
+      // настройки микрофона клиента (прошивка 2.0+), применяются сразу
+      const mic = (key, v) => call("room.mic", { id: r.id, [key]: v });
+      const agc = el("input", { type: "checkbox", checked: !!r.agc });
+      agc.addEventListener("change", async () => { try { await mic("agc", agc.checked); renderRooms(true); } catch (e) { toast(e.message); } });
+      card.append(el("label", { class: "row" }, agc, el("span", {}, "Автоусиление"),
+        el("span", { class: "lvl grow", style: "text-align:right" }, r.gain != null ? `сейчас ${Number(r.gain).toFixed(1)} дБ` : "")));
+      if (r.agc) card.append(slider("Не больше", r.agc_max ?? 30, 0, 30, " дБ", false, v => mic("agc_max", v), r.id + "am"));
+      else card.append(slider("Микрофон", Math.round(r.gain ?? 12), 0, 30, " дБ", false, v => mic("gain", v), r.id + "g"));
+      card.append(slider("Порог", r.vad ?? 250, 30, 2000, "", false, v => mic("vad", v), r.id + "t"));
+      card.append(slider("Пауза", r.hang ?? 1000, 300, 3000, " мс", false, v => mic("hang", v), r.id + "h"));
+    }
+    if (r.connected && (r.local || (r.caps || []).includes("meter"))) {
+      const meter = el("div", { class: "meter", "data-meter": r.id },
+        el("div", { class: "fill" }), el("div", { class: "band" }), el("div", { class: "thr" }));
+      card.append(meter, el("div", { class: "lvl", "data-meter-text": r.id }, "Уровень микрофона сейчас"));
+      meterThr[r.id] = r.local ? null : (r.vad ?? null);
+      if (meters[r.id] != null) setMeter(r.id, ...meters[r.id]);
     }
     if (r.levels && r.levels.length) {
       const last = r.levels[r.levels.length - 1];

@@ -11,10 +11,14 @@
 #   клиент -> сервер, текст:  {"type":"hello","room":"kitchen","name":"Кухня","token":"...","rate":16000,"fw":"1.0","volume":70}
 #                             {"type":"vad","state":"start"} / {"type":"vad","state":"end","level":1234}
 #                             {"type":"text","text":"ирина привет"}         (отладка: команда текстом)
+#                             {"type":"meter","level":..,"noise":..,"gain":..}  {"type":"state","gain":..,"vad":..,...}
+#                             (прошивка 2.0+: в hello есть "caps":["config","meter","agc"] и настройки микрофона)
 #   клиент -> сервер, binary: PCM s16le mono 16 кГц (только пока клиент слышит речь)
 #   сервер -> клиент, текст:  {"type":"welcome","volume":70} {"type":"wake"} {"type":"idle"}
 #                             {"type":"tts_start","rate":22050} ... {"type":"tts_end"}
 #                             {"type":"volume","value":0..100} {"type":"error","message":"..."}
+#                             {"type":"config","gain":..,"vad":..,"hang":..,"agc":true,"agc_max":30}
+#                             {"type":"meter","enable":true|false}   (живой индикатор, пока открыт веб-интерфейс)
 #   сервер -> клиент, binary: PCM s16le mono с частотой из tts_start (ответ Ирины)
 
 import argparse
@@ -62,6 +66,7 @@ DEFAULT_OPTIONS = {
     "local_mic_gain_db": 0,      # усиление микрофона приставки/ноутбука, дБ (тихие встроенные микрофоны: 10–20)
 }
 OPTIONS_FILE = os.path.splitext(os.path.abspath(__file__))[0] + ".json"
+MIC_KEYS = ("gain", "vad", "hang", "agc", "agc_max")   # настройки микрофона клиента (прошивка 2.0+)
 
 
 # ------------------------------------------------------------------ комнаты
@@ -88,6 +93,9 @@ class Room:
         self.client_name = name               # имя комнаты из настроек клиента (name — может переназначить сервер)
         self.info = {}                        # прошивка, Wi-Fi, IP — для веб-интерфейса
         self.levels = collections.deque(maxlen=20)   # уровни последних фраз
+        self.caps = set()                     # возможности прошивки клиента: config, meter, agc
+        self.live_level = None                # живой уровень микрофона (индикатор веб-интерфейса)
+        self.meter_enabled = False
         self.thread = threading.Thread(target=self._recognize_loop, name=f"asr-{room_id}", daemon=True)
         self.thread.start()
 
@@ -609,7 +617,9 @@ class RoomServer:
             room.client_name = client_name
             room.info = {"fw": hello.get("fw"), "rssi": hello.get("rssi"), "reset": hello.get("reset"),
                          "drops": hello.get("drops"), "ip": ws.remote_address[0], "since": time.time(),
-                         "client_name": client_name}
+                         "client_name": client_name, "chip": hello.get("chip"), "psram": hello.get("psram")}
+            room.caps = set(hello.get("caps") or [])
+            room.info.update({k: hello[k] for k in MIC_KEYS if k in hello})
             if isinstance(hello.get("volume"), int):
                 room.volume = max(0, min(100, hello["volume"]))
             self.rooms[room_id] = room
@@ -635,6 +645,12 @@ class RoomServer:
                 elif t == "text":
                     room.level = int(data.get("level", 1 << 30))
                     room._phrase(str(data.get("text", "")).lower().strip())
+                elif t == "meter":
+                    room.live_level = int(data.get("level", 0))
+                    room.info["noise"] = int(data.get("noise", 0))
+                    room.info["gain"] = data.get("gain", room.info.get("gain"))
+                elif t == "state":
+                    room.info.update({k: data[k] for k in MIC_KEYS if k in data})
         except Exception as e:
             logger.info(f"Клиент {getattr(ws, 'remote_address', '?')}: {e}")
         finally:

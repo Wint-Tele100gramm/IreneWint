@@ -3,11 +3,14 @@
 //  - проигрывает ответы сервера через I2S-усилитель
 //  - настройка Wi-Fi, адреса сервера и имени комнаты — через портал WiFiManager
 //
+//  - 2.0: настройки микрофона с сервера (веб-интерфейс), живой индикатор уровня, автоусиление по речи
+//
 // Протокол описан в начале runva_rooms.py.
 //
 // Сборка в Arduino IDE (подробно — esp32_client/README.md):
-//   плата "ESP32 Dev Module" (или "ESP32S3 Dev Module"),
-//   Partition Scheme: "Minimal SPIFFS (1.9MB APP with OTA/190KB SPIFFS)",
+//   ESP32-S3 N16R8: плата "ESP32S3 Dev Module", Flash 16MB, PSRAM "OPI PSRAM",
+//                   Partition Scheme "16M Flash (3MB APP/9.9MB FATFS)", USB CDC On Boot "Disabled" (адаптер с CH9102);
+//   ESP32:          плата "ESP32 Dev Module", Partition Scheme "Minimal SPIFFS (1.9MB APP with OTA/190KB SPIFFS)";
 //   библиотеки: WiFiManager (tzapu), WebSockets (Markus Sattler), ArduinoJson (Benoit Blanchon).
 //   Работает с ядром esp32 2.0.x и 3.x (в 3.x будет предупреждение о старом драйвере I2S — это нормально).
 
@@ -23,6 +26,7 @@
 #include "driver/i2s.h"
 #include "esp_idf_version.h"
 #include "esp_system.h"
+#include "esp_heap_caps.h"
 #include "config.h"
 
 // в ESP-IDF 5 (ядро Arduino 3.x) поля DMA переименованы, старые имена оставлены как устаревшие
@@ -49,11 +53,15 @@ struct Settings {
   String roomId;
   String roomName;
   String token;
-  int micGainDb = DEFAULT_MIC_GAIN_DB;
+  float micGainDb = DEFAULT_MIC_GAIN_DB;   // при автоусилении — подобранное значение
   int vadLevel = DEFAULT_VAD_LEVEL;
   int hangMs = DEFAULT_VAD_HANG_MS;
+  bool agc = DEFAULT_AGC;
+  int agcMaxDb = DEFAULT_AGC_MAX_DB;
 } cfg;
 float micGain = 4.0f;                    // линейное усиление из cfg.micGainDb
+bool gainDirty = false;                  // автоусиление поменяло усиление — сохранить позже
+uint32_t gainSavedAt = 0;
 
 Preferences prefs;
 WebSocketsClient ws;
@@ -83,6 +91,11 @@ int loudFrames = 0;
 uint32_t silenceMs = 0, speechMs = 0;
 uint64_t levelSum = 0;
 uint32_t levelCount = 0;
+uint32_t clipFrames = 0;             // кадры фразы с перегрузкой
+// живой индикатор для веб-интерфейса
+volatile bool meterOn = false;
+float meterPeak = 0;                 // максимум уровня за интервал
+uint32_t meterSentAt = 0;
 float hpPrevX = 0, hpPrevY = 0;      // фильтр постоянной составляющей
 
 // ---------------- светодиод и усилитель ----------------
@@ -95,6 +108,11 @@ void ampEnable(bool on) {
 }
 
 // ---------------- настройки: хранение ----------------
+void setGain(float db) {
+  cfg.micGainDb = constrain(db, 0.0f, 30.0f);
+  micGain = powf(10.0f, cfg.micGainDb / 20.0f);
+}
+
 String defaultRoomId() {
   char buf[16];
   snprintf(buf, sizeof(buf), "room-%06x", (uint32_t)(ESP.getEfuseMac() >> 24) & 0xFFFFFF);
@@ -109,11 +127,14 @@ void loadSettings() {
   cfg.roomName = prefs.getString("name", cfg.roomId);
   cfg.token = prefs.getString("token", "");
   volumePct = prefs.getUChar("volume", DEFAULT_VOLUME);
-  cfg.micGainDb = prefs.getInt("gain", DEFAULT_MIC_GAIN_DB);
+  cfg.micGainDb = prefs.isKey("gainf") ? prefs.getFloat("gainf", DEFAULT_MIC_GAIN_DB)
+                                       : (float)prefs.getInt("gain", DEFAULT_MIC_GAIN_DB);
   cfg.vadLevel = prefs.getInt("vadlvl", DEFAULT_VAD_LEVEL);
   cfg.hangMs = prefs.getInt("hang", DEFAULT_VAD_HANG_MS);
+  cfg.agc = prefs.getBool("agc", DEFAULT_AGC);
+  cfg.agcMaxDb = prefs.getInt("agcmax", DEFAULT_AGC_MAX_DB);
   prefs.end();
-  micGain = powf(10.0f, cfg.micGainDb / 20.0f);
+  setGain(cfg.micGainDb);
 }
 
 void saveSettings() {
@@ -123,10 +144,14 @@ void saveSettings() {
   prefs.putString("room", cfg.roomId);
   prefs.putString("name", cfg.roomName);
   prefs.putString("token", cfg.token);
-  prefs.putInt("gain", cfg.micGainDb);
+  prefs.putFloat("gainf", cfg.micGainDb);
   prefs.putInt("vadlvl", cfg.vadLevel);
   prefs.putInt("hang", cfg.hangMs);
+  prefs.putBool("agc", cfg.agc);
+  prefs.putInt("agcmax", cfg.agcMaxDb);
   prefs.end();
+  gainDirty = false;
+  gainSavedAt = millis();
 }
 
 void saveVolume() {
@@ -178,8 +203,8 @@ void onWifiEvent(arduino_event_id_t event, arduino_event_info_t info) {
 // Первый запуск: точка доступа "Irene-XXXXXX", страница настройки на 192.168.4.1.
 // После подключения к домашней сети та же страница доступна по IP клиента (http://<IP>/ -> "Setup").
 WiFiManager wm;
-WiFiManagerParameter *pServer, *pPort, *pRoom, *pName, *pToken, *pGain, *pVad, *pHang;
-char portStr[8], gainStr[8], vadStr[8], hangStr[8];
+WiFiManagerParameter *pServer, *pPort, *pRoom, *pName, *pToken, *pGain, *pVad, *pHang, *pAgc, *pAgcMax;
+char portStr[8], gainStr[8], vadStr[8], hangStr[8], agcStr[4], agcMaxStr[8];
 volatile bool portalSaved = false;      // сохранили настройки при первой настройке (AP)
 volatile bool liveSaved = false;        // сохранили настройки на странице в домашней сети
 
@@ -194,9 +219,11 @@ void applyParams() {
   if (token.length()) cfg.token = token;     // пустое поле — ключ не меняем
   if (cfg.roomId.isEmpty()) cfg.roomId = defaultRoomId();
   if (cfg.roomName.isEmpty()) cfg.roomName = cfg.roomId;
-  cfg.micGainDb = constrain(atoi(pGain->getValue()), 0, 30);
+  setGain(atof(pGain->getValue()));
   cfg.vadLevel = constrain(atoi(pVad->getValue()), 30, 5000);
   cfg.hangMs = constrain(atoi(pHang->getValue()), 300, 3000);
+  cfg.agc = atoi(pAgc->getValue()) != 0;
+  cfg.agcMaxDb = constrain(atoi(pAgcMax->getValue()), 0, 30);
   saveSettings();
 }
 
@@ -214,13 +241,19 @@ void setupWifi() {
   wm.addParameter(pRoom);
   wm.addParameter(pName);
   wm.addParameter(pToken);
-  snprintf(gainStr, sizeof(gainStr), "%d", cfg.micGainDb);
+  snprintf(gainStr, sizeof(gainStr), "%d", (int)roundf(cfg.micGainDb));
   snprintf(vadStr, sizeof(vadStr), "%d", cfg.vadLevel);
   snprintf(hangStr, sizeof(hangStr), "%d", cfg.hangMs);
-  pGain = new WiFiManagerParameter("gain", "Усиление микрофона, дБ (0-30; тихо/далеко — больше)", gainStr, 4);
+  snprintf(agcStr, sizeof(agcStr), "%d", cfg.agc ? 1 : 0);
+  snprintf(agcMaxStr, sizeof(agcMaxStr), "%d", cfg.agcMaxDb);
+  pGain = new WiFiManagerParameter("gain", "Усиление микрофона, дБ (0-30; при автоусилении — начальное)", gainStr, 4);
+  pAgc = new WiFiManagerParameter("agc", "Автоусиление: 1 — включено, 0 — выключено", agcStr, 2);
+  pAgcMax = new WiFiManagerParameter("agcmax", "Автоусиление не больше, дБ (0-30)", agcMaxStr, 3);
   pVad = new WiFiManagerParameter("vad", "Порог речи (30-5000; меньше — чувствительнее)", vadStr, 5);
   pHang = new WiFiManagerParameter("hang", "Пауза конца фразы, мс (300-3000)", hangStr, 5);
   wm.addParameter(pGain);
+  wm.addParameter(pAgc);
+  wm.addParameter(pAgcMax);
   wm.addParameter(pVad);
   wm.addParameter(pHang);
   wm.setSaveConfigCallback([]() { portalSaved = true; });
@@ -384,6 +417,14 @@ void playerTask(void*) {
 }
 
 // ---------------- WebSocket ----------------
+void fillMicState(JsonDocument& doc) {
+  doc["gain"] = roundf(cfg.micGainDb * 10) / 10;
+  doc["vad"] = cfg.vadLevel;
+  doc["hang"] = cfg.hangMs;
+  doc["agc"] = cfg.agc;
+  doc["agc_max"] = cfg.agcMaxDb;
+}
+
 void sendHello() {
   JsonDocument doc;
   doc["type"] = "hello";
@@ -396,9 +437,47 @@ void sendHello() {
   doc["rssi"] = WiFi.RSSI();                 // для лога сервера: качество связи и причина перезагрузки
   doc["reset"] = resetReasonText;
   doc["drops"] = (uint32_t)wifiDrops;
+  doc["chip"] = ESP.getChipModel();
+  doc["psram"] = (uint32_t)(ESP.getPsramSize() / 1024);
+  JsonArray caps = doc["caps"].to<JsonArray>();   // что умеет прошивка: сервер покажет нужные настройки
+  caps.add("config");
+  caps.add("meter");
+  caps.add("agc");
+  fillMicState(doc);
   String s;
   serializeJson(doc, s);
   ws.sendTXT(s);
+}
+
+
+void sendMicState() {
+  JsonDocument doc;
+  doc["type"] = "state";
+  fillMicState(doc);
+  String s;
+  serializeJson(doc, s);
+  ws.sendTXT(s);
+}
+
+// настройки микрофона с сервера (веб-интерфейс): применяются сразу, без перезагрузки
+void applyServerConfig(JsonDocument& doc) {
+  if (doc["gain"].is<float>()) setGain(doc["gain"].as<float>());
+  if (doc["vad"].is<int>()) cfg.vadLevel = constrain(doc["vad"].as<int>(), 30, 5000);
+  if (doc["hang"].is<int>()) cfg.hangMs = constrain(doc["hang"].as<int>(), 300, 3000);
+  if (doc["agc"].is<bool>()) cfg.agc = doc["agc"].as<bool>();
+  if (doc["agc_max"].is<int>()) cfg.agcMaxDb = constrain(doc["agc_max"].as<int>(), 0, 30);
+  if (cfg.agc && cfg.micGainDb > cfg.agcMaxDb) setGain(cfg.agcMaxDb);
+  saveSettings();
+  Serial.printf("Настройки с сервера: усиление %.1f дБ%s, порог %d, пауза %d мс\n", cfg.micGainDb,
+                cfg.agc ? " (авто)" : "", cfg.vadLevel, cfg.hangMs);
+  sendMicState();
+}
+
+void sendMeter(float level) {
+  char buf[128];
+  snprintf(buf, sizeof(buf), "{\"type\":\"meter\",\"level\":%d,\"noise\":%d,\"gain\":%.1f,\"speech\":%s}",
+           (int)level, (int)noiseFloor, cfg.micGainDb, inSpeech ? "true" : "false");
+  ws.sendTXT(buf);
 }
 
 void sendVad(bool start, uint32_t level) {
@@ -433,6 +512,10 @@ void onText(uint8_t* payload, size_t length) {
       saveVolume();
     }
     Serial.printf("Сервер: %s, громкость %d\n", t, (int)volumePct);
+  } else if (!strcmp(t, "config")) {
+    applyServerConfig(doc);
+  } else if (!strcmp(t, "meter")) {
+    meterOn = doc["enable"] | false;          // сервер включает индикатор, пока открыта страница
   } else if (!strcmp(t, "error")) {
     Serial.printf("Ошибка от сервера: %s\n", (const char*)(doc["message"] | ""));
   }
@@ -449,6 +532,7 @@ void onWsEvent(WStype_t type, uint8_t* payload, size_t length) {
       if (wsConnected) Serial.println("Отключено от сервера");
       wsConnected = false;
       inSpeech = false;
+      meterOn = false;
       break;
     case WStype_TEXT:
       onText(payload, length);
@@ -501,13 +585,43 @@ void queueFrame(const int16_t* f) {
   if (++packetFrames >= FRAMES_PER_PACKET) flushPacket();
 }
 
+// Автоусиление: после фразы сдвигаем усиление к цели. Посреди фразы не трогаем (мешает распознаванию),
+// короткие щелчки не учитываем, шум не поднимаем выше порога, при перегрузке снижаем сразу.
+void agcUpdate(uint32_t level) {
+  if (!cfg.agc || level == 0) return;
+  float before = cfg.micGainDb;
+  float step;
+  if (clipFrames >= 3 || level > AGC_CLIP_LEVEL) {
+    step = -AGC_STEP_MAX_DB;                                  // искажения — вниз без раздумий
+  } else {
+    if (speechMs < 500) return;                               // щелчок, хлопок — не повод менять
+    float err = 20.0f * log10f((float)AGC_TARGET / (float)level);
+    step = constrain(err / 3.0f, -AGC_STEP_MAX_DB, AGC_STEP_MAX_DB);
+    if (fabsf(step) < 0.5f) return;                           // и так хорошо
+  }
+  float target = before + step;
+  if (step > 0) {
+    // потолок по шуму: усиленный шум должен остаться заметно ниже порога речи
+    float noiseCeil = before + 20.0f * log10f((cfg.vadLevel * 0.5f) / max(noiseFloor, 1.0f));
+    target = min(target, max(noiseCeil, before));
+    target = min(target, (float)cfg.agcMaxDb);
+  }
+  target = constrain(target, 0.0f, 30.0f);
+  if (fabsf(target - before) < 0.1f) return;
+  setGain(target);
+  noiseFloor *= powf(10.0f, (target - before) / 20.0f);       // шум в новом масштабе
+  gainDirty = true;
+  Serial.printf("Автоусиление: %.1f -> %.1f дБ (уровень фразы %u, цель %d)\n", before, target, level, AGC_TARGET);
+}
+
 void endSpeech() {
   flushPacket();
   uint32_t level = levelCount ? (uint32_t)(levelSum / levelCount) : 0;
   if (wsConnected) sendVad(false, level);
   // для настройки чувствительности: хорошая речь — уровень 1500–5000, шум — в разы меньше порога
-  Serial.printf("Фраза %.1f с: уровень речи %u, шум %.0f, порог %d, усиление %d дБ\n",
-                speechMs / 1000.0f, level, noiseFloor, cfg.vadLevel, cfg.micGainDb);
+  Serial.printf("Фраза %.1f с: уровень речи %u, шум %.0f, порог %d, усиление %.1f дБ%s\n",
+                speechMs / 1000.0f, level, noiseFloor, cfg.vadLevel, cfg.micGainDb, cfg.agc ? " (авто)" : "");
+  agcUpdate(level);
   inSpeech = false;
   loudFrames = 0;
   if (millis() > wakeUntil) led(false);
@@ -518,27 +632,31 @@ void processMic() {
   if (i2s_read(MIC_PORT, micRaw, sizeof(micRaw), &bytesRead, pdMS_TO_TICKS(100)) != ESP_OK) return;
   if (bytesRead < sizeof(micRaw)) return;
 
-  // пока звучит ответ (и чуть после) — микрофон не слушаем, иначе Ирина услышит саму себя
-  if (playing || millis() - playEndMs < MIC_MUTE_AFTER_TTS_MS) {
-    if (inSpeech) endSpeech();
-    prerollCount = 0;
-    return;
-  }
-
   // 32 бита -> 16 бит, убираем постоянную составляющую, считаем уровень
   uint64_t sq = 0;
+  int clipped = 0;
   for (int i = 0; i < FRAME; i++) {
     float x = (float)(micRaw[i] >> 8) * (micGain / 256.0f);   // 24 бита -> 16 бит с усилением
     float y = x - hpPrevX + 0.995f * hpPrevY;
     hpPrevX = x;
     hpPrevY = y;
     int32_t s = (int32_t)y;
-    if (s > 32767) s = 32767;
-    if (s < -32768) s = -32768;
+    if (s > 32767) { s = 32767; clipped++; }
+    if (s < -32768) { s = -32768; clipped++; }
     frame16[i] = (int16_t)s;
     sq += (int64_t)s * s;
   }
   float rms = sqrtf((float)sq / FRAME);
+
+  bool muted = playing || millis() - playEndMs < MIC_MUTE_AFTER_TTS_MS;
+  if (!muted && rms > meterPeak) meterPeak = rms;
+
+  // пока звучит ответ (и чуть после) — микрофон не слушаем, иначе Ирина услышит саму себя
+  if (muted) {
+    if (inSpeech) endSpeech();
+    prerollCount = 0;
+    return;
+  }
 
   if (!wsConnected) return;
 
@@ -565,6 +683,7 @@ void processMic() {
       speechMs = 0;
       levelSum = 0;
       levelCount = 0;
+      clipFrames = 0;
       packetFrames = 0;
       sendVad(true, 0);
       // отправляем звук, записанный до начала речи (включая текущий кадр)
@@ -580,6 +699,7 @@ void processMic() {
   speechMs += 20;
   levelSum += (uint32_t)rms;
   levelCount++;
+  if (clipped > 4) clipFrames++;
   if (rms < max(noiseFloor * 2.0f, (float)cfg.vadLevel * 0.6f)) silenceMs += 20;
   else silenceMs = 0;
   uint32_t hang = (millis() < wakeUntil) ? cfg.hangMs * 2 : cfg.hangMs;
@@ -610,7 +730,14 @@ void setup() {
   ArduinoOTA.onStart([]() { ws.disconnect(); });
   ArduinoOTA.begin();
 
-  audioBuf = xStreamBufferCreate(24 * 1024, 1);   // ~0,55 с при 22 кГц (сервер держит запас 0,3 с)
+  Serial.printf("Чип %s, PSRAM %u КБ, свободно ОЗУ %u КБ\n", ESP.getChipModel(),
+                (unsigned)(ESP.getPsramSize() / 1024), (unsigned)(ESP.getFreeHeap() / 1024));
+  // буфер ответа: в PSRAM, если она есть (S3 N16R8), иначе во внутренней памяти
+  static StaticStreamBuffer_t audioBufCtl;
+  uint8_t* storage = nullptr;
+  if (psramFound()) storage = (uint8_t*)heap_caps_malloc(AUDIO_BUF_BYTES + 1, MALLOC_CAP_SPIRAM);
+  if (!storage) storage = (uint8_t*)heap_caps_malloc(AUDIO_BUF_BYTES + 1, MALLOC_CAP_8BIT);
+  if (storage) audioBuf = xStreamBufferCreateStatic(AUDIO_BUF_BYTES, 1, storage, &audioBufCtl);
   if (!audioBuf) Serial.println("!! Не хватило памяти под буфер звука");
   setupMic();
   setupAmp();
@@ -625,6 +752,16 @@ void loop() {
   handleWebPortal();
   checkResetButton();
   processMic();      // блокируется на ~20 мс, пока не накопится кадр — это и есть ритм цикла
+  if (meterOn && wsConnected && millis() - meterSentAt >= METER_INTERVAL_MS) {
+    meterSentAt = millis();
+    sendMeter(meterPeak);
+    meterPeak = 0;
+  }
+  // подобранное автоусиление сохраняем нечасто — флеш-память не любит частую запись
+  if (gainDirty && !inSpeech && millis() - gainSavedAt > AGC_SAVE_MS) {
+    saveSettings();
+    if (wsConnected) sendMicState();
+  }
   // Wi-Fi пропал: пробуем переподключиться каждые 5 с, через 2 минуты — перезагрузка
   static uint32_t wifiLostAt = 0, lastReconnect = 0;
   if (WiFi.status() != WL_CONNECTED) {
