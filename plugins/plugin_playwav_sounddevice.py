@@ -1,54 +1,41 @@
-# Playwav plugin for sounddevice engine
+# Проигрывание WAV через sounddevice (Windows и любые системы без aplay)
 # author: Vladislav Janvarev
 
 import os
 
+import numpy
+import sounddevice
+import soundfile
+
 from vacore import VACore
-import sounddevice as sound_device
-import soundfile as sound_file
 
-modname = os.path.basename(__file__)[:-3] # calculating modname
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# функция на старте
-def start(core:VACore):
-    manifest = {
+
+def start(core: VACore):
+    return {
         "name": "PlayWav through sounddevice",
-        "version": "1.0",
+        "version": "1.1",
         "require_online": False,
-
         "playwav": {
-            "sounddevice": (init,playwav) # первая функция инициализации, вторая - проиграть wav-файл
-        }
+            "sounddevice": (init, playwav),
+        },
     }
-    return manifest
 
-def start_with_options(core:VACore, manifest:dict):
+
+def start_with_options(core: VACore, manifest: dict):
     pass
 
-def init(core:VACore):
+
+def init(core: VACore):
     pass
 
-def playwav(core:VACore, wavfile:str):
-    #AudioPlayer(wavfile).play(block=True)
-    filename = os.path.dirname(__file__)+"/../"+wavfile
 
-    #filename = 'timer/Sounds/Loud beep.wav'
-    # now, Extract the data and sampling rate from file
-    data_set, fsample = sound_file.read(filename, dtype = 'float32')
-
-    # Этот фикс позволяет убрать проглатывания из концов фраз
-    # Просто добавляет 0 в конце проигрываемому файлу
+def playwav(core: VACore, wavfile: str):
+    path = wavfile if os.path.isabs(wavfile) else os.path.join(ROOT, wavfile)
+    data, rate = soundfile.read(path, dtype="float32")
+    # тишина в конце, иначе sounddevice иногда «проглатывает» конец фразы
     # https://github.com/spatialaudio/python-sounddevice/issues/283
-    # zeros = []
-    # for i in range(5000):
-    #     zeros.append(0.0)
-    import numpy
-    zeros = numpy.zeros((5000,)) # fix by modos189
-    data_set_new = numpy.concatenate((data_set,zeros))
-    # end fix
-
-    sound_device.play(data_set_new, fsample)
-    # Wait until file is done playing
-    status = sound_device.wait()
-    return
-
+    pad = numpy.zeros((5000,) + data.shape[1:], dtype=data.dtype)
+    sounddevice.play(numpy.concatenate((data, pad)), rate)
+    sounddevice.wait()

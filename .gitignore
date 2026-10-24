@@ -1,20 +1,18 @@
+# настройки и секреты (токены) — только на устройстве
 /options/
-/plugins_my/
-/timer/
-/silero_*
-/.idea/
-/plugins/plugin_tts_rhvoice.py
-/rhvoice_temp.wav
-/temp/
-/plugins/plugin_tts_silero.py
-/venv/
-/.venv/
-*.pyc
-/tts_cache/
-/runva_webapi.json
-/model-vosk-sherpa
 /runva_rooms.json
-/silero_model_v4.pt
-/silero_model_v4.pt.part
-/test.wav
-/model-sherpa
+
+# окружение и модели
+/.venv/
+/venv/
+/model-sherpa/
+/model/
+/mpv/
+
+# рабочие файлы
+/temp/
+/tts_cache/
+log.txt
+__pycache__/
+*.pyc
+/.idea/

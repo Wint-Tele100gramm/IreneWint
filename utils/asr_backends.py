@@ -1,45 +1,15 @@
-# Распознавание речи для сервера комнат: общий интерфейс для двух движков.
-#
-#  - sherpa: новая потоковая модель Vosk (Zipformer, 0.54+/0.56) через sherpa-onnx.
-#            Одна модель в памяти на все комнаты, у каждой комнаты свой лёгкий "поток".
-#            Малая int8-модель: ~100 МБ ОЗУ, ошибок ~11% (у старой small-0.22 ~30%).
-#  - kaldi:  классический Vosk (KaldiRecognizer), модель в папке "model". ~250 МБ ОЗУ.
+# Распознавание речи для сервера комнат: потоковая модель Vosk (Zipformer, 0.54+/0.56) через sherpa-onnx.
+# Одна модель в памяти на все комнаты, у каждой комнаты свой лёгкий "поток".
+# Малая int8-модель: ~100 МБ ОЗУ, ошибок ~11% (у старой Kaldi-модели small-0.22 было ~30% и ~250 МБ).
 #
 # Сессия распознавания (на комнату):
 #   accept(pcm_s16le) -> (final_text | None, partial_text)
 #   finish()          -> final_text   (конец фразы по сигналу VAD клиента)
 
-import json
 import os
 import threading
 
 import numpy as np
-
-
-class KaldiBackend:
-    name = "kaldi"
-
-    def __init__(self, model_path="model"):
-        import vosk
-        vosk.SetLogLevel(-1)
-        self.model = vosk.Model(model_path)
-
-    def session(self, endpointing=True):
-        return _KaldiSession(self.model)
-
-
-class _KaldiSession:
-    def __init__(self, model):
-        from vosk import KaldiRecognizer
-        self.rec = KaldiRecognizer(model, 16000)
-
-    def accept(self, pcm: bytes):
-        if self.rec.AcceptWaveform(pcm):
-            return json.loads(self.rec.Result()).get("text", ""), ""
-        return None, json.loads(self.rec.PartialResult()).get("partial", "")
-
-    def finish(self):
-        return json.loads(self.rec.FinalResult()).get("text", "")
 
 
 class SherpaBackend:
@@ -116,12 +86,9 @@ class _SherpaSession:
 
 
 def create_backend(options):
-    kind = options.get("asr", "sherpa")
-    if kind == "sherpa":
-        try:
-            return SherpaBackend(options.get("sherpa_model", "model-sherpa"), int(options.get("asr_threads", 2)))
-        except (ImportError, FileNotFoundError) as e:
-            # нет sherpa-onnx или модели (например, установка до перехода на новую модель) — работаем на старой
-            print(f"Новая модель Vosk недоступна ({e}). Использую классический Vosk из папки model.")
-            print("Чтобы включить новую: bash scripts/rk3528/get_asr_model.sh")
-    return KaldiBackend(options.get("model", "model"))
+    model_dir = options.get("sherpa_model", "model-sherpa")
+    try:
+        return SherpaBackend(model_dir, int(options.get("asr_threads", 2)))
+    except FileNotFoundError as e:
+        raise SystemExit(f"Нет модели распознавания ({e}).\n"
+                         f"Скачайте её: bash scripts/rk3528/get_asr_model.sh (Windows: install_windows.bat)")

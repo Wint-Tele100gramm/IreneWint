@@ -84,8 +84,6 @@ SETTINGS = [
          "help": "Например /tmp/irene-dump; пусто — не записывать. Записи слушаются на вкладке «Журнал»"},
         {"key": "tts_cache_max_mb", "label": "Кэш озвучки, не больше МБ", "type": "number", "live": True},
         {"key": "tts_cache_max_days", "label": "Удалять фразы, не звучавшие дней", "type": "number", "live": True},
-        {"key": "asr", "label": "Распознавание", "type": "select",
-         "choices": [["sherpa", "новая модель Vosk (sherpa-onnx)"], ["kaldi", "старая модель Vosk"]]},
     ]},
 ]
 

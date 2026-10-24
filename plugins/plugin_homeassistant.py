@@ -3,7 +3,7 @@
 #
 # Примеры: "ирина включи свет на кухне", "ирина выключи весь свет",
 #          "ирина яркость в спальне тридцать процентов", "ирина закрой шторы",
-#          "ирина какая температура в детской", "ирина активируй сцену кино"
+#          "ирина какая температура в детской", "ирина активируй сцену кино", "ирина какая погода"
 #
 # Устройства находятся автоматически по их имени и зоне (area) в Home Assistant.
 # Если имя в HA неудобно произносить, добавьте синоним в options/plugin_homeassistant.json -> "aliases".
@@ -19,6 +19,7 @@ import difflib
 import requests
 
 from vacore import VACore, DialogTimeout
+from utils.num_to_text_ru import num2text
 from utils.ru_words_to_num import extract_number
 from utils.cmd_route import delegate_longer_command
 
@@ -93,6 +94,7 @@ def start(core: VACore):
             "температура|какая температура|сколько градусов|влажность|какая влажность|состояние": query_state,
             "сцена|включи сцену": (do_action, "scene"),
             "обнови устройства|обнови умный дом": refresh_cmd,
+            "погода|какая погода|что с погодой|прогноз погоды|погода на завтра|какая погода завтра": weather,
         },
     }
     return manifest
@@ -556,3 +558,83 @@ def refresh_cmd(core: VACore, phrase: str):
         return
     _load_entities(core)
     core.say(f"Нашла {len(_entities)} устройств")
+
+
+# ---------------- погода (интеграция погоды в Home Assistant, например «Яндекс Погода» или Met.no) ----------------
+
+_CONDITIONS = {
+    "clear-night": "ясно", "sunny": "солнечно", "partlycloudy": "переменная облачность", "cloudy": "облачно",
+    "fog": "туман", "rainy": "дождь", "pouring": "ливень", "lightning": "гроза", "lightning-rainy": "гроза с дождём",
+    "snowy": "снег", "snowy-rainy": "снег с дождём", "hail": "град", "windy": "ветрено",
+    "windy-variant": "ветрено и облачно", "exceptional": "опасная погода",
+}
+_DEGREE = (("градус", "градуса", "градусов"), "m")
+_MPS = (("метр в секунду", "метра в секунду", "метров в секунду"), "m")
+_PCT = (("процент", "процента", "процентов"), "m")
+
+
+def _temp(value) -> str:
+    t = round(float(value))
+    sign = "плюс " if t > 0 else ("минус " if t < 0 else "")
+    return sign + num2text(abs(t), _DEGREE)
+
+
+def _weather_entity(core):
+    _ensure_entities(core)
+    with _lock:
+        found = [e for e in _entities if e["domain"] == "weather"]
+    return found[0]["id"] if found else None
+
+
+def _forecast(core, entity_id):
+    """Прогноз по дням: новый способ HA (weather.get_forecasts), для старых версий — атрибут forecast."""
+    try:
+        r = _api(core, "POST", "services/weather/get_forecasts?return_response",
+                 {"entity_id": entity_id, "type": "daily"})
+        return r["service_response"][entity_id]["forecast"]
+    except Exception:
+        st = _api(core, "GET", f"states/{entity_id}")
+        return st.get("attributes", {}).get("forecast") or []
+
+
+def weather(core: VACore, phrase: str):
+    if not _check_ready(core):
+        return
+    tomorrow = "завтра" in (core.input_cmd_full or "") or "завтра" in phrase
+    try:
+        entity_id = _weather_entity(core)
+        if entity_id is None:
+            core.say("В Home Assistant нет интеграции погоды. Добавьте, например, Яндекс Погоду или Met.no")
+            return
+        if tomorrow:
+            days = _forecast(core, entity_id)
+            if len(days) < 2:
+                core.say("Прогноза на завтра нет")
+                return
+            d = days[1]
+            parts = [f"Завтра {_CONDITIONS.get(d.get('condition'), '')}".strip()]
+            if d.get("temperature") is not None:
+                parts.append(f"днём {_temp(d['temperature'])}")
+            if d.get("templow") is not None:
+                parts.append(f"ночью {_temp(d['templow'])}")
+            if d.get("precipitation_probability"):
+                parts.append(f"вероятность осадков {num2text(int(d['precipitation_probability']), _PCT)}")
+            core.say(", ".join(parts))
+            return
+        st = _api(core, "GET", f"states/{entity_id}")
+    except Exception as e:
+        logger.exception(e)
+        core.say("Не удалось узнать погоду в Home Assistant")
+        return
+    a = st.get("attributes", {})
+    parts = [f"Сейчас {_CONDITIONS.get(st.get('state'), '')}".strip()]
+    if a.get("temperature") is not None:
+        parts.append(_temp(a["temperature"]))
+    if a.get("humidity") is not None:
+        parts.append(f"влажность {num2text(round(float(a['humidity'])), _PCT)}")
+    if a.get("wind_speed") is not None:
+        speed = float(a["wind_speed"])
+        if a.get("wind_speed_unit", "km/h") == "km/h":
+            speed /= 3.6
+        parts.append(f"ветер {num2text(round(speed), _MPS)}")
+    core.say(", ".join(parts))

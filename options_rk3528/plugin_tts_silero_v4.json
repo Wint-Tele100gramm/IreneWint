@@ -1,9 +1,0 @@
-{
-    "v": "2.0",
-    "speaker": "xenia",
-    "threads": 4,
-    "sample_rate": 24000,
-    "put_accent": true,
-    "put_yo": true,
-    "speaker_by_assname": {}
-}

@@ -1,33 +1,25 @@
-# TTS plugin - just console output for debugging
+# «Озвучка» текстом в консоль — запасной вариант, если голос не загрузился
 # author: Vladislav Janvarev
 
-import os
+from termcolor import cprint
 
 from vacore import VACore
-# import pyttsx3
 
-modname = os.path.basename(__file__)[:-3] # calculating modname
 
-# функция на старте
-def start(core:VACore):
-    manifest = {
+def start(core: VACore):
+    return {
         "name": "TTS console (for debug)",
         "version": "1.0",
         "require_online": False,
-
         "tts": {
-            "console": (init,say) # первая функция инициализации, вторая - говорить
-        }
+            "console": (init, say),
+        },
     }
-    return manifest
 
-def init(core:VACore):
+
+def init(core: VACore):
     pass
 
-def say(core:VACore, text_to_speech:str):
-    # просто выводим текст в консоль
-    try:
-        from termcolor import colored, cprint
-        cprint("TTS: {}".format(text_to_speech),"blue")
-    except Exception as e:
-        print("TTS: {}".format(text_to_speech))
+
+def say(core: VACore, text_to_speech: str):
+    cprint(f"TTS: {text_to_speech}", "blue")

@@ -1,7 +1,6 @@
 # Игра больше меньше
 # author: Vladislav Janvarev
 
-from datetime import datetime
 
 from vacore import VACore
 import random

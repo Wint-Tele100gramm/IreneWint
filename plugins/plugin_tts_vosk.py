@@ -1,83 +1,49 @@
-# TTS plugin for Vosk engine
+# Озвучка через vosk-tts (офлайн)
 # author: Vladislav Janvarev
+# Модель скачивается в ~/.cache/vosk (scripts/rk3528/get_tts_model.sh или install_windows.bat).
 
+import logging
 import os
+import time
 
 from vacore import VACore
-import logging
-import re
 
-
-modname = os.path.basename(__file__)[:-3] # calculating modname
+modname = os.path.basename(__file__)[:-3]
 logger = logging.getLogger(__name__)
 
 
-# функция на старте
-def start(core:VACore):
-    manifest = {
+def start(core: VACore):
+    return {
         "name": "TTS vosk",
         "version": "1.4",
         "require_online": False,
-
-        "description": "TTS через VOSK\n"
-                       "ID для указания: vosk\n"
-                       "Список голосов доступен здесь: https://giters.com/alphacep/vosk-tts",
-
+        "description": "Озвучка vosk-tts. ID: vosk. Голоса 0–4 (2 — Ирина).",
         "default_options": {
-            "modelId": "vosk-model-tts-ru-0.7-multi", # модель
-            "speakerId": 2, # id голоса irina (доступно 0,1,2,3,4)
-            "useGPU": False # не использовать GPU
+            "modelId": "vosk-model-tts-ru-0.7-multi",
+            "speakerId": 2,
+            "useGPU": False,     # не используется: на приставке и ноутбуке хватает процессора
         },
-
         "tts": {
-            "vosk": (init,None,towavfile) # первая функция инициализации, вторая - говорить, третья - в wav file
-                                         # если вторая - None, то используется 3-я с проигрыванием файла
-        }
+            "vosk": (init, None, towavfile),   # инициализация, (говорить сразу — нет), синтез в WAV
+        },
     }
-    return manifest
 
-def start_with_options(core:VACore, manifest:dict):
+
+def start_with_options(core: VACore, manifest: dict):
     pass
 
-def init(core:VACore):
+
+def init(core: VACore):
     from vosk_tts.model import Model
     from vosk_tts.synth import Synth
-    from time import time
 
-    model_init_start_time = time()
-    logger.info("Init model starting...")
+    started = time.time()
     options = core.plugin_options(modname)
-
-    if options['useGPU']:
-        try:
-            import torch
-            import onnxruntime
-            from importlib.metadata import distributions
-            installed = {dist.metadata['Name'].lower() for dist in distributions() if
-                         dist.metadata['Name'].lower().startswith('onnxruntime-gpu')}
-            if not installed:
-                raise ImportError
-        except ImportError:
-            logger.warning("Please install torch and onnxruntime-gpu")
-        else:
-            if torch.cuda.is_available():
-                logger.info("CUDA is available")
-            else:
-                logger.info("CUDA is not available")
-            logger.debug(
-                f'Available providers: {onnxruntime.get_available_providers()}')  # список доступных провайдеров
-
-    core.ttsModel = Model(model_name=options['modelId'])
-    logger.debug(f'Used providers: {core.ttsModel.onnx._providers}')  # список используемых провайдеров
+    core.ttsModel = Model(model_name=options["modelId"])
     core.ttsSynth = Synth(core.ttsModel)
-    model_init_end_time = time()
-    logger.info(f"Init done in {model_init_end_time - model_init_start_time:.1f} sec")
+    logger.info(f"Модель голоса загружена за {time.time() - started:.1f} с")
 
 
-def towavfile(core:VACore, text_to_speech:str,wavfile:str):
-    """
-    Проигрывание речи ответов голосового ассистента с сохранением в файл
-    :param text_to_speech: текст, который нужно преобразовать в речь
-    """
+def towavfile(core: VACore, text_to_speech: str, wavfile: str):
     options = core.plugin_options(modname)
-    core.ttsSynth.synth(core.normalize(text_to_speech),wavfile,speaker_id=options['speakerId'])
+    core.ttsSynth.synth(core.normalize(text_to_speech), wavfile, speaker_id=options["speakerId"])

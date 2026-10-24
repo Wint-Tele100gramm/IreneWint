@@ -55,7 +55,7 @@ except Exception as e:
         else:
             print(str(color).upper(),p)
 
-version = "2.2.0"
+version = "2.3.0"
 
 class JaaCore:
     def __init__(self,root_file = __file__):
@@ -78,7 +78,7 @@ class JaaCore:
         from os import listdir
         from os.path import isfile, join
         pluginpath = self.jaaRootFolder+"/plugins"
-        files = [f for f in listdir(pluginpath) if isfile(join(pluginpath, f))]
+        files = sorted(f for f in listdir(pluginpath) if isfile(join(pluginpath, f)))  # одинаковый порядок везде
 
         for fil in files:
             # print fil[:-3]
@@ -202,92 +202,6 @@ class JaaCore:
         if "options" in manifest:
             return manifest["options"]
         return None
-
-    # ------------ gradio stuff --------------
-    def gradio_save(self,pluginname):
-        print("Saving options for {0}!".format(pluginname))
-        self.save_plugin_options(pluginname,self.plugin_options(pluginname))
-
-    def gradio_upd(self, pluginname, option, val):
-        options = self.plugin_options(pluginname)
-
-        # special case
-        if isinstance(options[option], (list, dict)) and isinstance(val, str):
-            import json
-            try:
-                options[option] = json.loads(val)
-            except Exception as e:
-                print(e)
-                pass
-        else:
-            options[option] = val
-        print(option,val,options)
-
-    def gradio_render_settings_interface(self, title:str="Settings manager", required_fields_to_show_plugin:list=["default_options"]):
-        import gradio as gr
-
-        with gr.Blocks() as gr_interface:
-            gr.Markdown("# {0}".format(title))
-            for pluginname in self.plugin_manifests:
-                manifest = self.plugin_manifests[pluginname]
-
-                # calculate if we show plugin
-                is_show_plugin = False
-                if len(required_fields_to_show_plugin) == 0:
-                    is_show_plugin = True
-                else:
-                    for k in required_fields_to_show_plugin:
-                        if manifest.get(k) is not None:
-                            is_show_plugin = True
-
-                if is_show_plugin:
-                    with gr.Tab(pluginname):
-                        gr.Markdown("## {0} v{1}".format(manifest["name"],manifest["version"]))
-                        if manifest.get("description") is not None:
-                            gr.Markdown(manifest.get("description"))
-
-                        if manifest.get("url") is not None:
-                            gr.Markdown("**URL:** [{0}]({0})".format(manifest.get("url")))
-
-
-                        if "options" in manifest:
-                            options = manifest["options"]
-                            if len(options) > 1: # not only v
-                                text_button = gr.Button("Save options".format(pluginname))
-                                #options_int_list = []
-                                for option in options:
-
-                                    #gr.Label(label=option)
-                                    if option != "v":
-                                        val = options[option]
-                                        label = option
-
-                                        if manifest.get("options_label") is not None:
-                                            if manifest.get("options_label").get(option) is not None:
-                                                label = option+": "+manifest.get("options_label").get(option)
-
-
-                                        if isinstance(val, (bool, )):
-                                            gr_elem = gr.Checkbox(value=val,label=label)
-                                        elif isinstance(val, (dict,list)):
-                                            import json
-                                            gr_elem = gr.Textbox(value=json.dumps(val,ensure_ascii=False), label=label)
-                                        else:
-                                            gr_elem = gr.Textbox(value=val, label=label)
-
-                                        def handler(x,pluginname=pluginname,option=option):
-                                            self.gradio_upd(pluginname, option, x)
-
-                                        gr_elem.change(handler, gr_elem, None)
-
-                                def handler_save(pluginname=pluginname):
-                                    self.gradio_save(pluginname)
-
-                                text_button.click(handler_save,inputs=None,outputs=None)
-                        else:
-                            gr.Markdown("_No options for this plugin_")
-
-        return gr_interface
 
 
 def load_options(options_file=None,py_file=None,default_options={}):

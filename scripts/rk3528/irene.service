@@ -8,10 +8,10 @@ Type=simple
 WorkingDirectory=@REPO@
 Environment=PYTHONUNBUFFERED=1
 # Сервер комнат: клиенты ESP32 + (если задан local_room в runva_rooms.json) микрофон самой приставки.
-# Вариант без клиентов, только микрофон приставки: runva_vosk.py -r 16000
 ExecStart=@REPO@/.venv/bin/python runva_rooms.py
+RestartForceExitStatus=3
 Restart=on-failure
-RestartSec=5
+RestartSec=2
 # не даём Ирине съесть всю память приставки
 MemoryHigh=900M
 MemoryMax=1200M

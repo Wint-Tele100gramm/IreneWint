@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
-# Установка Ирины на ТВ-приставку RK3528 (Armbian, aarch64).
+# Установка Ирины на ТВ-приставку (Armbian/Debian, aarch64): RK3528, S905 и другие.
 # Запускать от обычного пользователя (не root) из корня репозитория:
 #     bash scripts/rk3528/install.sh            # всё: Ирина, AirPlay, Bluetooth, DLNA
 #     bash scripts/rk3528/install.sh --no-bt    # без Bluetooth
 #     bash scripts/rk3528/install.sh --aec      # + эхоподавление PipeWire (опционально)
 #     bash scripts/rk3528/install.sh --lite     # приставка с 1 ГБ ОЗУ: без DLNA и Bluetooth, zram, жёсткий лимит памяти
 #                                               (включается сам, если ОЗУ меньше 1,5 ГБ; --full — отключить)
-#     bash scripts/rk3528/install.sh --asr kaldi  # старое распознавание Vosk вместо новой потоковой модели
 #
 # Переменные: PYTHON=/usr/local/bin/python3.13 (по умолчанию python3.13 из PATH)
 
@@ -15,7 +14,7 @@ set -euo pipefail
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 SCRIPTS="$REPO/scripts/rk3528"
 PYTHON="${PYTHON:-python3.13}"
-WITH_BT=1; WITH_AIRPLAY=1; WITH_DLNA=1; WITH_AEC=0; ASR=sherpa
+WITH_BT=1; WITH_AIRPLAY=1; WITH_DLNA=1; WITH_AEC=0
 MEM_MB=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)
 LITE=0; [ "$MEM_MB" -lt 1500 ] && LITE=1
 while [ $# -gt 0 ]; do
@@ -26,7 +25,6 @@ while [ $# -gt 0 ]; do
     --aec) WITH_AEC=1 ;;
     --lite) LITE=1 ;;
     --full) LITE=0 ;;
-    --asr) ASR="$2"; shift ;;
     *) echo "Неизвестный параметр $1"; exit 1 ;;
   esac
   shift
@@ -100,7 +98,9 @@ if env | grep -qiE '^(all|https?)_proxy=socks'; then
 fi
 # pip не обновляем: версия из Debian работает, а в свежих бывают ошибки с прокси
 "${PIP[@]}" install wheel
-"${PIP[@]}" install -r "$REPO/requirements-rk3528.txt"
+"${PIP[@]}" install -r "$REPO/requirements.txt"
+# остатки прежних версий, больше не нужны
+"${PIP[@]}" uninstall -y vosk >/dev/null 2>&1 || true
 
 echo "==> Настройки Ирины"
 mkdir -p "$REPO/options" "$REPO/temp"
@@ -116,10 +116,8 @@ if [ ! -e "$REPO/runva_rooms.json" ]; then
     "host": "0.0.0.0",
     "port": 8765,
     "token": "$ROOMS_TOKEN",
-    "asr": "$ASR",
     "sherpa_model": "model-sherpa",
     "asr_threads": 2,
-    "model": "model",
     "local_room": "",
     "local_device": null,
     "arbitration_ms": 450,
@@ -132,10 +130,11 @@ JSON
 fi
 ROOMS_TOKEN="$("$REPO/.venv/bin/python" -c "import json; print(json.load(open('$REPO/runva_rooms.json'))['token'])")"
 
-if [ "$ASR" = sherpa ] && [ ! -s "$REPO/model-sherpa/tokens.txt" ] && [ ! -s "$REPO/model-sherpa/lang/tokens.txt" ]; then
+if [ ! -s "$REPO/model-sherpa/tokens.txt" ] && [ ! -s "$REPO/model-sherpa/lang/tokens.txt" ]; then
   echo "==> Модель распознавания речи (потоковая Vosk, малая int8)"
-  bash "$SCRIPTS/get_asr_model.sh" small || echo "!! Не скачалась — Ирина будет работать на старой модели Vosk из папки model"
+  bash "$SCRIPTS/get_asr_model.sh" small || echo "!! Не скачалась — без неё Ирина не запустится. Повторите: bash $SCRIPTS/get_asr_model.sh"
 fi
+rm -rf "$REPO/model"   # старая модель Kaldi из прежних версий (~90 МБ) больше не используется
 
 if grep -q '"ttsEngineId": *"vosk"' "$REPO/options/core.json" 2>/dev/null; then
   echo "==> Модель голоса vosk-tts"
@@ -220,15 +219,13 @@ done
 cat <<EOF
 
 Готово. Дальше:
-  1. Home Assistant: впишите url и token в $REPO/options/plugin_homeassistant.json
-     (файл появится после первого запуска; токен: Профиль HA -> Безопасность -> Долгосрочные токены)
-  2. Яндекс Музыка:  $REPO/.venv/bin/python $SCRIPTS/yandex_token.py
-  3. Клиенты ESP32 (esp32_client/README.md): сервер $(hostname -I | awk '{print $1}'), порт 8765,
+  1. Веб-интерфейс:   http://$(hostname -I | awk '{print $1}'):8765/  (пароль — ключ клиентов ниже)
+     Там: Home Assistant (адрес и токен), вход в Яндекс Музыку, комнаты, сценарии.
+  2. Клиенты ESP32 (esp32_client/README.md): сервер $(hostname -I | awk '{print $1}'), порт 8765,
      ключ: $ROOMS_TOKEN
-     Микрофон самой приставки как комната: "local_room": "Гостиная" в $REPO/runva_rooms.json
-  4. Запуск:          systemctl --user start $UNITS
+  3. Запуск:          systemctl --user start $UNITS
      Логи:            journalctl --user-unit irene -f
-  5. Проверьте микрофон: arecord -l   и   pactl list short sources
+  4. Микрофон приставки (если нужен): arecord -l, pactl list short sources
 
 Перезайдите по SSH, чтобы применились группы audio/bluetooth.
 EOF

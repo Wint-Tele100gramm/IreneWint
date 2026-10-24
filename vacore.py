@@ -1,356 +1,167 @@
+# Ядро Ирины: команды плагинов, контекст и диалоги, таймеры, озвучка.
+# На основе VACore Владислава Январева (MIT); убраны веб-API, ИИ-плагины, MPC-HC и второй движок озвучки.
+
+import hashlib
 import inspect
 import json
+import logging
 import os
+import time
 import traceback
-import hashlib
-import copy
-
-import requests
+from threading import Timer
+from typing import Dict
 
 from termcolor import colored, cprint
-import time
-from threading import Timer
-
-from typing import Dict, List, Tuple
 
 from jaa import JaaCore
 
-from collections.abc import Callable
-
-version = "13.2.0"
-
-import logging
+version = "14.0.0"
 
 logger = logging.getLogger(__name__)
+
 
 class DialogTimeout(Exception):
     """Бросается в генератор диалога, если пользователь не ответил вовремя."""
 
 
-# main VACore class
-
 class VACore(JaaCore):
     def __init__(self):
         JaaCore.__init__(self)
 
-        self.timers = [-1,-1,-1,-1,-1,-1,-1,-1]
-        self.timersFuncUpd = [None,None,None,None,None,None,None,None]
-        self.timersFuncEnd = [None,None,None,None,None,None,None,None]
-        self.timersDuration = [0,0,0,0,0,0,0,0]
+        self.timers = [-1] * 8
+        self.timersFuncEnd = [None] * 8
 
-        self.commands = {
-        }
-
-        self.plugin_commands = {
-        }
-
-        self.ttss = {
-        }
-        self.tts_owner: Dict[str, str] = {}   # движок TTS -> плагин (его настройки входят в ключ кэша)
-        self.run_in_main = lambda fn: fn()     # сервер комнат подменяет: выполнять в потоке команд
-
-        self.playwavs = {
-        }
-
-        self.normalizers = {
-        }
-
-        self.fuzzy_processors: Dict[str, tuple[Callable,Callable]] = {
-        }
-
-        # more options
-        self.mpcHcPath = ""
-        self.mpcIsUse = False
-        self.mpcIsUseHttpRemote = False
+        self.commands = {}                       # фраза -> функция | (функция, параметр) | вложенный словарь
+        self.plugin_commands: Dict[str, list] = {}
+        self.ttss = {}                           # движок -> (init, say, to_wav_file)
+        self.tts_owner: Dict[str, str] = {}      # движок -> плагин (его настройки входят в ключ кэша)
+        self.playwavs = {}                       # движок -> (init, play)
+        self.normalizers = {}                    # движок -> (init, normalize)
+        self.fuzzy_processors: Dict[str, tuple] = {}
+        self.run_in_main = lambda fn: fn()       # сервер комнат подменяет: выполнять в потоке команд
 
         self.isOnline = False
         self.version = version
-
         self.voiceAssNames = []
         self.voiceAssNameRunCmd = {}
 
         self.useTTSCache = False
         self.tts_cache_dir = "tts_cache"
         self.ttsEngineId = ""
-        self.ttsEngineId2 = ""
         self.playWavEngineId = ""
-
+        self.normalization_engine = ""
 
         self.logPolicy = ""
         self.tmpdir = "temp"
         self.tmpcnt = 0
-
         self.lastSay = ""
-        self.remoteTTS = "none"
-        self.remoteTTSResult = None
 
         self.context = None
         self.contextTimer = None
         self.contextExitCommand = ""
         self.contextTimerLastDuration = 0
-
         self.contextDefaultDuration = 10
-        self.contextRemoteWaitForCall = False
 
-        try:
-            import mpcapi.core
-            self.mpchc = mpcapi.core.MpcAPI()
-        except Exception as e:
-            self.mpchc = None
-
-        self.cur_callname:str = ""
-
-        self.input_cmd_full:str = ""
-
-        self.fastApiApp = None
-
-        self.log_console = True
-        self.log_console_level = "WARNING"
-        self.log_file = False
-        self.log_file_level = "DEBUG"
-        self.log_file_name = "log.txt"
-
-        self.normalization_engine:str = "" # отвечает за нормализацию текста для русских TTS
-
-        self.plugin_types:list[str] = []
-
-        self.openai_base_url:str = ""
-        self.openai_key:str = ""
-        self.openai_tools_model:str = ""
-        self.openai_tools_system_prompt:str = ""
-        self.openai_generic_model: str = ""
-        self.openai_generic_system_prompt: str = ""
-
-        self.ai_tools:Dict[str, Dict] = {}
-
-
+        self.cur_callname = ""
+        self.input_cmd_full = ""
 
     def init_with_plugins(self):
         self.init_plugins(["core"])
         self.display_init_info()
-
         self.setup_assistant_voice()
 
-    # ----------- process plugins functions ------
-    def process_plugin_manifest(self,modname,manifest):
-        # is req online?
-        plugin_req_online = True
-        if "require_online" in manifest:
-            plugin_req_online = manifest["require_online"]
+    # ---------------------------------------------------------------- манифесты плагинов
+    def process_plugin_manifest(self, modname, manifest):
+        req_online = manifest.get("require_online", True)
+        for cmd, func in manifest.get("commands", {}).items():
+            self.commands[cmd] = self.stub_online_required if (not self.isOnline and req_online) else func
+            self.plugin_commands.setdefault(modname, []).append(cmd)
+        for name, funcs in manifest.get("tts", {}).items():
+            self.ttss[name] = funcs
+            self.tts_owner[name] = modname
+        self.playwavs.update(manifest.get("playwav", {}))
+        self.normalizers.update(manifest.get("normalizer", {}))
+        self.fuzzy_processors.update(manifest.get("fuzzy_processor", {}))
 
-        # adding commands from plugin manifest
-        if "commands" in manifest: # process commands
-            for cmd in manifest["commands"].keys():
-                if not self.isOnline and plugin_req_online:
-                    # special processing
-                    self.commands[cmd] = self.stub_online_required
-                else:
-                    # normal add command
-                    self.commands[cmd] = manifest["commands"][cmd]
+    def stub_online_required(self, core, phrase):
+        self.say(self.plugin_options("core")["replyOnlineRequired"])
 
-                if modname in self.plugin_commands:
-                    self.plugin_commands[modname].append(cmd)
-                else:
-                    self.plugin_commands[modname] = [cmd]
-
-        # adding tts engines from plugin manifest
-        if "tts" in manifest: # process commands
-            for cmd in manifest["tts"].keys():
-                self.ttss[cmd] = manifest["tts"][cmd]
-                self.tts_owner[cmd] = modname
-
-        # adding playwav engines from plugin manifest
-        if "playwav" in manifest: # process commands
-            for cmd in manifest["playwav"].keys():
-                self.playwavs[cmd] = manifest["playwav"][cmd]
-
-        # adding playwav engines from plugin manifest
-        if "normalizer" in manifest:  # process commands
-            for cmd in manifest["normalizer"].keys():
-                self.normalizers[cmd] = manifest["normalizer"][cmd]
-
-        # adding fuzzy processors engines from plugin manifest
-        if "fuzzy_processor" in manifest: # process commands
-            for cmd in manifest["fuzzy_processor"].keys():
-                self.fuzzy_processors[cmd] = manifest["fuzzy_processor"][cmd]
-
-        # adding ai_tools from plugin manifest
-        if "ai_tools" in manifest:  # process ai_tools
-            for cmd in manifest["ai_tools"].keys():
-                self.ai_tools[cmd] = manifest["ai_tools"][cmd]
-
-    def stub_online_required(self,core,phrase):
-        self.play_voice_assistant_speech(self.plugin_options("core")["replyOnlineRequired"])
-
-    def print_error(self,err_txt,e:Exception = None):
-        cprint(err_txt,"red")
-        # if e != None:
-        #     cprint(e,"red")
-        import traceback
+    def print_error(self, err_txt, e: Exception = None):
+        cprint(err_txt, "red")
         traceback.print_exc()
 
-    def print_red(self,txt):
-        cprint(txt,"red")
+    def print_red(self, txt):
+        cprint(txt, "red")
 
-    # ----------- text-to-speech functions ------
-
+    # ---------------------------------------------------------------- озвучка
     def setup_assistant_voice(self):
-        # init playwav engine
         try:
             self.playwavs[self.playWavEngineId][0](self)
         except Exception as e:
-            self.print_error("Ошибка инициализации плагина проигрывания WAV (playWavEngineId)", e)
-            self.print_red('Попробуйте установить в options/core.json: "playWavEngineId": "sounddevice"')
-            self.print_red('...временно переключаюсь на консольный вывод ответа...')
+            self.print_error("Ошибка инициализации проигрывания WAV (playWavEngineId)", e)
+            self.print_red('Попробуйте в options/core.json: "playWavEngineId": "aplay" (Linux) или "sounddevice"')
             self.ttsEngineId = "console"
 
-        # init normalization engine
         if self.normalization_engine != "none":
             try:
                 self.normalizers[self.normalization_engine][0](self)
             except Exception as e:
                 self.print_error(f"Ошибка инициализации нормализатора {self.normalization_engine}", e)
-                self.print_red('Попробуйте установить в options/core.json: "normalization_engine": "none"')
                 self.normalization_engine = "none"
 
-
-        # init tts engine
         try:
             self.ttss[self.ttsEngineId][0](self)
         except Exception as e:
-            self.print_error("Ошибка инициализации плагина TTS (ttsEngineId)", e)
-            cprint('Попробуйте установить в options/core.json: "ttsEngineId": "console" для тестирования вывода через консоль', "red")
-            cprint('Позднее, если все заработает, вы сможете настроить свой TTS-движок', "red")
-
-            from sys import platform
-            if platform == "linux" or platform == "linux2":
-                cprint("Подробнее об установке на Linux: https://github.com/janvarev/Irene-Voice-Assistant/blob/master/docs/INSTALL_LINUX.md", "red")
-            elif platform == "darwin":
-                cprint("Подробнее об установке на Mac: https://github.com/janvarev/Irene-Voice-Assistant/blob/master/docs/INSTALL_MAC.md", "red")
-            elif platform == "win32":
-                #cprint("Подробнее об установке на Linux: https://github.com/janvarev/Irene-Voice-Assistant/blob/master/docs/INSTALL_LINUX.md", "red")
-                pass
-
-            self.print_red('...временно переключаюсь на консольный вывод ответа...')
+            self.print_error("Ошибка инициализации озвучки (ttsEngineId) — ответы будут только текстом", e)
             self.ttsEngineId = "console"
 
-        # init tts2 engine
-        if self.ttsEngineId2 == "":
-            self.ttsEngineId2 = self.ttsEngineId
-        if self.ttsEngineId2 != self.ttsEngineId:
+        for name, (init, _) in self.fuzzy_processors.items():
             try:
-                self.ttss[self.ttsEngineId2][0](self)
+                init(self)
             except Exception as e:
-                self.print_error("Ошибка инициализации плагина TTS2 (ttsEngineId2)", e)
+                self.print_error(f"Ошибка инициализации fuzzy_processor {name}", e)
 
-        # init all fuzzy_processors
-        for k in self.fuzzy_processors.keys():
-            try:
-                self.fuzzy_processors[k][0](self)
-            except Exception as e:
-                self.print_error("Ошибка инициализации fuzzy_processor {0}".format(k), e)
-
-    def normalize(self, text:str):
+    def normalize(self, text: str):
         if self.normalization_engine == "none":
             return text
-        else:
-            return self.normalizers[self.normalization_engine][1](self, text)
+        return self.normalizers[self.normalization_engine][1](self, text)
 
-    def play_voice_assistant_speech(self,text_to_speech:str):
+    def play_voice_assistant_speech(self, text_to_speech: str):
+        """Сказать фразу. Сервер комнат подменяет этот метод: ответ уходит в комнату, откуда пришла команда."""
         self.lastSay = text_to_speech
-        remoteTTSList = self.remoteTTS.split(",")
+        say_now = self.ttss[self.ttsEngineId][1]
+        if say_now is not None:
+            say_now(self, text_to_speech)
+            return
+        tts_file = self.get_tts_cache_file(text_to_speech) if self.useTTSCache else self.get_tempfilename() + ".wav"
+        if self.useTTSCache and os.path.exists(tts_file):
+            self.touch_cache_file(tts_file)
+        else:
+            os.makedirs(os.path.dirname(tts_file) or ".", exist_ok=True)
+            self.tts_to_filewav(text_to_speech, tts_file)
+        self.play_wav(tts_file)
+        if not self.useTTSCache and os.path.exists(tts_file):
+            os.unlink(tts_file)
 
-        self.remoteTTSResult = {}
-        is_processed = False
-        if "none" in remoteTTSList: # no remote tts, do locally anything
-            #self.remoteTTSResult = "" # anywhere, set it ""
-
-            if self.ttss[self.ttsEngineId][1] != None:
-                self.ttss[self.ttsEngineId][1](self,text_to_speech)
-            else:
-                if self.useTTSCache:
-                    tts_file = self.get_tts_cache_file(text_to_speech)
-                else:
-                    tts_file = self.get_tempfilename()+".wav"
-
-                #print('Temp TTS filename: ', tts_file)
-                if not self.useTTSCache or self.useTTSCache and not os.path.exists(tts_file):
-                    self.tts_to_filewav(text_to_speech, tts_file)
-                elif self.useTTSCache:
-                    self.touch_cache_file(tts_file)
-
-                self.play_wav(tts_file)
-                if not self.useTTSCache and os.path.exists(tts_file):
-                    os.unlink(tts_file)
-
-            is_processed = True
-
-        if "saytxt" in remoteTTSList: # return only last say txt
-            self.remoteTTSResult["restxt"] = text_to_speech
-
-            is_processed = True
-
-        if "saywav" in remoteTTSList:
-            if self.useTTSCache:
-                tts_file = self.get_tts_cache_file(text_to_speech)
-            else:
-                tts_file = self.get_tempfilename()+".wav"
-
-            if not self.useTTSCache or self.useTTSCache and not os.path.exists(tts_file):
-                self.tts_to_filewav(text_to_speech, tts_file)
-            #self.play_wav(tts_file)
-            import base64
-
-            with open(tts_file, "rb") as wav_file:
-                encoded_string = base64.b64encode(wav_file.read())
-
-            if not self.useTTSCache and os.path.exists(tts_file):
-                os.unlink(tts_file)
-
-            self.remoteTTSResult["wav_base64"] = encoded_string
-
-            is_processed = True
-
-        if not is_processed:
-            print("Ошибка при выводе TTS - remoteTTS не был обработан.")
-            print("Текущий remoteTTS: {}".format(self.remoteTTS))
-            print("Текущий remoteTTSList: {}".format(remoteTTSList))
-            print("Ожидаемый remoteTTS (например): 'none'")
-
-
-
-    def say(self,text_to_speech:str): # alias for play_voice_assistant_speech
+    def say(self, text_to_speech: str):
         self.play_voice_assistant_speech(text_to_speech)
 
-    def say2(self,text_to_speech:str): # озвучивает через второй движок
-        if self.ttss[self.ttsEngineId2][1] != None:
-            self.ttss[self.ttsEngineId2][1](self,text_to_speech)
-        else:
-            tempfilename = self.get_tempfilename()+".wav"
-            #print('Temp TTS filename: ', tempfilename)
-            self.tts_to_filewav2(text_to_speech,tempfilename)
-            self.play_wav(tempfilename)
-            if os.path.exists(tempfilename):
-                os.unlink(tempfilename)
+    def say2(self, text_to_speech: str):
+        # совместимость со старыми плагинами (раньше был второй движок озвучки)
+        self.say(text_to_speech)
 
-
-    def tts_to_filewav(self,text_to_speech:str,filename:str):
-        if len(self.ttss[self.ttsEngineId]) > 2:
-            self.ttss[self.ttsEngineId][2](self,text_to_speech,filename)
+    def tts_to_filewav(self, text_to_speech: str, filename: str):
+        engine = self.ttss[self.ttsEngineId]
+        if len(engine) > 2:
+            engine[2](self, text_to_speech, filename)
         else:
-            print("File save not supported by this TTS")
-
-    def tts_to_filewav2(self,text_to_speech:str,filename:str): # через второй движок
-        if len(self.ttss[self.ttsEngineId2]) > 2:
-            self.ttss[self.ttsEngineId2][2](self,text_to_speech,filename)
-        else:
-            print("File save not supported by this TTS")
+            print("Этот движок озвучки не умеет сохранять в файл")
 
     def get_tempfilename(self):
         self.tmpcnt += 1
-        return self.tmpdir+"/vacore_"+str(self.tmpcnt)
+        return f"{self.tmpdir}/vacore_{self.tmpcnt}"
 
-    def get_tts_cache_file(self, text_to_speech:str):
+    def get_tts_cache_file(self, text_to_speech: str):
         # в ключ входят и настройки движка (голос, скорость): после их смены старые фразы не звучат прежним голосом
         settings = ""
         owner = self.tts_owner.get(self.ttsEngineId)
@@ -359,10 +170,9 @@ class VACore(JaaCore):
                 settings = json.dumps(self.plugin_options(owner), sort_keys=True, ensure_ascii=False)
             except Exception:
                 pass
-        hash = hashlib.md5((settings + "\n" + text_to_speech).encode('utf-8')).hexdigest()
-        text_slice = text_to_speech[:40].replace("/", " ")
-        filename = ".".join([text_slice, hash, "wav"])
-        return self.tts_cache_dir+"/"+self.ttsEngineId+"/"+filename
+        digest = hashlib.md5((settings + "\n" + text_to_speech).encode("utf-8")).hexdigest()
+        text_slice = "".join(c if c.isalnum() or c in " ,.!?-" else " " for c in text_to_speech[:40])
+        return f"{self.tts_cache_dir}/{self.ttsEngineId}/{text_slice}.{digest}.wav"
 
     @staticmethod
     def touch_cache_file(path: str):
@@ -372,307 +182,122 @@ class VACore(JaaCore):
         except OSError:
             pass
 
-    def all_num_to_text(self,text:str):
+    def all_num_to_text(self, text: str):
         from utils.all_num_to_text import all_num_to_text
         return all_num_to_text(text)
 
-    # -------- main function ----------
-    def find_best_cmd_with_fuzzy(self,command,context,allow_rest_phrase = True,threshold:float = None):
-        """
-        Поиск оптимальной команды с учетом обработчиков нечеткого сравнения
-
-        - command - команда
-        - context - в формате Ирининого контекста (словарь {"cmd":"val",...}) - с элементами контекста будет сравниваться в поиске команды
-        - allow_rest_phrase - дана ли в команде вся команда, или она может быть продолжена в контексте? не все нечеткие сравнители обрабатывают корректно
-        Пример:
-        allow_rest_phrase=True: привет как дела -> привет (отлично подходит, будет вернута rest_phrase как дела)
-        allow_rest_phrase=False: привет как дела -> привет (подходит не очень, будет вернута rest_phrase "")
-        - threshold - в случае нечеткого сравнения - порог схожести (от 0.0 до 1.0). Если лучший результат сравнения ниже порога, результат не будет возвращен.
-        Если None / не указано - будет браться из параметров core ядра Ирины.
-
-        Возвращает tuple(key_in_context, схожесть (от 0.0 до 1.0), res_phrase)
-        """
-
-        # первый проход - ищем полное совпадение
-        for keyall in context.keys():
-            keys = keyall.split("|")
-            for key in keys:
-                if command == key:
-                    return (keyall, 1.0, "")
-
-        if allow_rest_phrase: # если фраза может быть неполной
-            # второй проход - ищем частичное совпадение
-            for keyall in context.keys():
-                keys = keyall.split("|")
-                for key in keys:
-                    if command.startswith(key):
-                        rest_phrase = command[(len(key) + 1):]
-                        return (keyall, 1.0, rest_phrase)
-
+    # ---------------------------------------------------------------- поиск команды
+    def find_best_cmd_with_fuzzy(self, command, context, allow_rest_phrase=True, threshold: float = None):
+        """Ищет команду в context ({"фраза|вариант": ...}).
+        Возвращает (ключ в context, уверенность 0..1, остаток фразы) или None.
+        Сначала точное совпадение, потом начало фразы, потом нечёткие сравнители из плагинов."""
+        for keyall in context:
+            if command in keyall.split("|"):
+                return keyall, 1.0, ""
+        if allow_rest_phrase:
+            for keyall in context:
+                for key in keyall.split("|"):
+                    if command.startswith(key + " "):
+                        return keyall, 1.0, command[len(key) + 1:]
         if threshold is None:
             threshold = self.plugin_options("core")["fuzzyThreshold"]
-
-        # третий проход - ищем с помощью fuzzy_processors
-        # TODO: по хорошему надо пробежаться по всем процессорам, и выдать лучший результат,
-        # но пока берется просто первый прошедший пороговое значение
-        for fuzzy_processor_k in self.fuzzy_processors.keys():
-            res = None
-            try:
-                res = self.fuzzy_processors[fuzzy_processor_k][1](self, command, context, allow_rest_phrase)
-            except TypeError as e:
-                # старый вариант, где только 3 параметра
-                # print(e)
-                # import traceback
-                # traceback.print_exc()
-                logger.exception(e)
-                res = self.fuzzy_processors[fuzzy_processor_k][1](self, command, context)
-
-            # fuzzy processor должен вернуть либо None либо
-            # (context_key:str,уверенность:float[0:1],rest_phrase:str) для лучшей фразы
-            print("Fuzzy processor {0}, result for '{1}': {2}".format(fuzzy_processor_k, command, res))
-
-            if res is not None:
-                keyall, probability, rest_phrase = res
-                if threshold < probability:
-                    return res
-
+        for name, (_, process) in self.fuzzy_processors.items():
+            res = process(self, command, context, allow_rest_phrase)
+            logger.info(f"Fuzzy {name} для «{command}»: {res}")
+            if res is not None and res[1] > threshold:
+                return res
         return None
 
-    def calc_ai_tools_manifest(self):
-        res = []
-        for ai_tool_name in self.ai_tools.keys():
-            ai_tool = self.ai_tools.get(ai_tool_name)
-            cur = {}
-            if ai_tool.get("v") == "1":
-                cur = copy.deepcopy(ai_tool.get("manifest"))
-                cur["function"]["name"] = ai_tool_name # дополнительный процессинг устанавливает имя
-            else:
-                logger.warning(f"Не могу обработать AI Tool {ai_tool_name} - данная версия V не поддерживается текущей версией Ирины")
-            res.append(cur)
-        return res
+    def fuzzy_get_command_key_from_context(self, predicted_command: str, context: dict):
+        for keyall in context:
+            if predicted_command in keyall.split("|"):
+                return keyall
+        return None
 
-
-    def call_ai_tools(self, query: str) -> Tuple[int, str]:
-        """Makes request to API and returns tuple of (status_code, response_text)"""
-        # time.sleep(numb*0.01)
-        try:
-            messages = []
-            if self.openai_tools_system_prompt != "":
-                messages.append({"role": "system", "content": self.openai_tools_system_prompt})
-
-            messages.append({"role": "user", "content": query})
-
-            payload:dict = {
-                    "model": self.openai_tools_model,
-                    "messages": messages,
-                    "temperature": 0.1,
-                    "max_tokens": 4096,
-                    "tool_choice": "auto",
-                }
-
-            payload["tools"] = self.calc_ai_tools_manifest()
-
-            logger.info("AI Call Tool payload")
-            logger.info(payload)
-
-
-            response = requests.post(
-                url=f"{self.openai_base_url}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {self.openai_key}",
-                    "X-Title": f"Irene Voice Assistant (tools)"
-                },
-                json=payload
-            )
-            return response.status_code, response.text
-        except Exception as e:
-            return 500, str(e)
-
-    def execute_next(self,command,context):
-        is_first_call = False
-        if context == None: # первый вход
-            is_first_call = True
+    def execute_next(self, command, context):
+        if context is None:              # первый вход
             context = self.commands
-            self.input_cmd_full = command # нужно для василия
+            self.input_cmd_full = command
 
-        if isinstance(context,dict):
-            pass
-        else:
-            # it is function to call!
-            #context(self,command)
+        if not isinstance(context, dict):   # функция: команда найдена
             self.context_clear()
-            if command == self.contextExitCommand and self.contextExitCommand != '':
-                print('Context cleared.')
-                self.contextTimer = None
-            else:
-                self.call_ext_func_phrase(command,context)
-            
+            if command == self.contextExitCommand and self.contextExitCommand != "":
+                print("Контекст сброшен командой выхода")
+                return
+            self.call_ext_func_phrase(command, context)
             return
 
         try:
-            is_allow_classic_plugins = (not is_first_call) or ("classic" in self.plugin_types)
-            if is_allow_classic_plugins:
-                res = self.find_best_cmd_with_fuzzy(command,context,True)
-                if res is not None:
-                    keyall, probability, rest_phrase = res
-                    next_context = context[keyall]
-                    self.execute_next(rest_phrase, next_context)
-                    return
-
-            if is_first_call and ("ai" in self.plugin_types): # разрешены плагины ИИ
-                res_code, res = self.call_ai_tools(command)
-                logger.info(f"AI tool result code: {res_code}")
-                logger.info(res)
-                # self.say("Вызов успешен!")
-                if res_code == 200: # основной вариант успешного вызова
-                    response = json.loads(res)
-                    message = response["choices"][0]["message"]
-                    if message.get("tool_calls") is not None:
-                        # тулза найдена успешно
-                        tools_param:dict = message["tool_calls"][0].get("function")
-                        func_name = tools_param.get("name")
-                        func_params = json.loads(tools_param.get("arguments"))
-
-                        # непосредственно вызываем процедуру
-                        self.ai_tools[func_name]["function"](self, **func_params)
-                    else:
-                        # Непонятно, нейросеть переспрашивает. Но Контекст не вводим!
-
-                        # этот код позволяет озвучить ответ от нейросети
-                        # answer = message["content"]
-                        # self.say(answer)
-
-                        self.say(self.plugin_options("core")["replyNoCommandFound"])
-                else:
-                    logger.error(["Error during AI call, code", res_code, res])
-                    self.say("Ошибка при вызове ИИ для определения инструмента. Посмотрите логи")
-
+            res = self.find_best_cmd_with_fuzzy(command, context, True)
+            if res is not None:
+                keyall, _, rest_phrase = res
+                self.execute_next(rest_phrase, context[keyall])
                 return
-
-            # первый проход - ищем полное совпадение
-            # for keyall in context.keys():
-            #     keys = keyall.split("|")
-            #     for key in keys:
-            #         if command == key:
-            #             rest_phrase = ""
-            #             next_context = context[keyall]
-            #             self.execute_next(rest_phrase,next_context)
-            #             return
-            #
-            # # второй проход - ищем частичное совпадение
-            # for keyall in context.keys():
-            #     keys = keyall.split("|")
-            #     for key in keys:
-            #         if command.startswith(key):
-            #             rest_phrase = command[(len(key)+1):]
-            #             next_context = context[keyall]
-            #             self.execute_next(rest_phrase,next_context)
-            #             return
-            #
-            # # третий проход - ищем с помощью fuzzy_processors
-            # # TODO: по хорошему надо пробежаться по всем процессорам, и выдать лучший результат,
-            # # но пока берется просто первый прошедший пороговое значение
-            # for fuzzy_processor_k in self.fuzzy_processors.keys():
-            #     res = self.fuzzy_processors[fuzzy_processor_k][1](self,command,context)
-            #
-            #     # fuzzy processor должен вернуть либо None либо
-            #     # (context_key:str,уверенность:float[0:1],rest_phrase:str) для лучшей фразы
-            #     print("Fuzzy processor {0}, result for '{1}': {2}".format(fuzzy_processor_k, command, res))
-            #
-            #     if res is not None:
-            #         keyall, probability, rest_phrase = res
-            #         if self.plugin_options("core")["fuzzyThreshold"] < probability:
-            #             next_context = context[keyall]
-            #             self.execute_next(rest_phrase, next_context)
-            #             return
-
-            # if not founded
-            if self.context == None:
-                # no context
+            if self.context is None:
                 self.say(self.plugin_options("core")["replyNoCommandFound"])
             else:
-                # in context
                 self.say(self.plugin_options("core")["replyNoCommandFoundInContext"])
-                # restart timer for context
-                if self.contextTimer != None:
-                    self.context_set(self.context,self.contextTimerLastDuration)
+                if self.contextTimer is not None:
+                    self.context_set(self.context, self.contextTimerLastDuration)
         except Exception as err:
             logger.exception(err)
 
-    # fuzzy util
-    def fuzzy_get_command_key_from_context(self, predicted_command:str, context:dict):
-        # возвращает ключ в context по одной из распознанных команд внутри
-        # нужно для fuzzy, так как одним из возвратов должен быть КЛЮЧ в контексте, а не команда
-        for keyall in context.keys():
-            for key in keyall.split("|"):
-                if key == predicted_command:
-                    return keyall
-        return None
-
-    # ----------- timers -----------
-    def util_time_to_readable(self,curtime):
+    # ---------------------------------------------------------------- таймеры
+    @staticmethod
+    def util_time_to_readable(curtime):
         import datetime
-        human_readable_date_local = datetime.datetime.fromtimestamp(curtime)
+        return datetime.datetime.fromtimestamp(curtime).strftime('%Y-%m-%d %H:%M:%S')
 
-        # Print it in a human-readable format using local time zone
-        return human_readable_date_local.strftime('%Y-%m-%d %H:%M:%S')
-
-    def set_timer(self, duration, timerFuncEnd, timerFuncUpd = None):
-        # print "Start set_timer!"
-        curtime = time.time()
+    def set_timer(self, duration, timerFuncEnd, timerFuncUpd=None):
+        """Через duration секунд вызвать timerFuncEnd (функция или (функция, параметр)). Возвращает номер или -1."""
         for i in range(len(self.timers)):
             if self.timers[i] <= 0:
-                # print "Found timer!"
-                self.timers[i] = curtime+duration  #duration
+                self.timers[i] = time.time() + duration
                 self.timersFuncEnd[i] = timerFuncEnd
-                print("New Timer ID =", str(i), ' curtime=', self.util_time_to_readable(curtime), 'duration=', duration, 'endtime=', self.util_time_to_readable(self.timers[i]))
+                print(f"Таймер {i}: через {duration} с ({self.util_time_to_readable(self.timers[i])})")
                 return i
-        return -1  # no more timer valid
+        return -1
 
     def clear_timer(self, index, runEndFunc=False):
-        if runEndFunc and self.timersFuncEnd[index] != None:
+        if runEndFunc and self.timersFuncEnd[index] is not None:
             self.call_ext_func(self.timersFuncEnd[index])
         self.timers[index] = -1
-        self.timersDuration[index] = 0
         self.timersFuncEnd[index] = None
 
-    def clear_timers(self): # not calling end function
+    def clear_timers(self):
         for i in range(len(self.timers)):
-            if self.timers[i] >= 0:
-                self.timers[i] = -1
-                self.timersFuncEnd[i] = None
+            self.timers[i] = -1
+            self.timersFuncEnd[i] = None
 
     def _update_timers(self):
-        curtime = time.time()
-        for i in range(len(self.timers)):
-            if(self.timers[i] > 0):
-                if curtime >= self.timers[i]:
-                    print("End Timer ID =", str(i), ' curtime=', self.util_time_to_readable(curtime), 'endtime=', self.util_time_to_readable(self.timers[i]))
-                    self.clear_timer(i,True)
+        now = time.time()
+        for i, end in enumerate(self.timers):
+            if 0 < end <= now:
+                print(f"Таймер {i} сработал")
+                self.clear_timer(i, True)
 
-    # --------- calling functions -----------
-
-    def call_ext_func(self,funcparam):
-        if isinstance(funcparam,tuple): # funcparam =(func, param)
-            funcparam[0](self,funcparam[1])
-        else: # funcparam = func
+    # ---------------------------------------------------------------- вызов функций плагинов
+    def call_ext_func(self, funcparam):
+        if isinstance(funcparam, tuple):
+            funcparam[0](self, funcparam[1])
+        else:
             funcparam(self)
 
-    def call_ext_func_phrase(self,phrase,funcparam):
-        if isinstance(funcparam,tuple): # funcparam =(func, param)
-            res = funcparam[0](self,phrase,funcparam[1])
-        else: # funcparam = func
-            res = funcparam(self,phrase)
+    def call_ext_func_phrase(self, phrase, funcparam):
+        if isinstance(funcparam, tuple):
+            res = funcparam[0](self, phrase, funcparam[1])
+        else:
+            res = funcparam(self, phrase)
         if inspect.isgenerator(res):
             self.dialog_start(res)
 
-    # ------- диалоги на генераторах (идея из форка AlexeyBond) -------
+    # ---------------------------------------------------------------- диалоги на генераторах (идея из форка AlexeyBond)
     # Команда может вернуть генератор:
     #     def ask_light(core, phrase):
     #         answer = yield "Где включить свет: на кухне или в зале?"   # сказать и ждать ответа (без имени)
     #         answer = yield ("Повторите", 15)                          # ...с таймаутом 15 с
     #         return "Готово"                                            # сказать и закончить диалог
-    # Если ответа нет, в генератор приходит исключение DialogTimeout: его можно перехватить и что-то сказать.
+    # Если ответа нет, в генератор приходит DialogTimeout: его можно перехватить и что-то сказать.
     # Ответ ждётся в той же комнате, где начался диалог.
 
     def dialog_start(self, gen):
@@ -687,7 +312,7 @@ class VACore(JaaCore):
             return
         except DialogTimeout:
             return
-        if inspect.isgenerator(value):          # вложенный диалог без yield from — просто продолжаем его
+        if inspect.isgenerator(value):
             return self.dialog_start(value)
         timeout = None
         if isinstance(value, tuple):
@@ -700,92 +325,57 @@ class VACore(JaaCore):
         answer.dialog_gen = gen
         self.context_set(answer, timeout)
 
-    # ------- play wav from subfolder ----------
-    def play_wav(self,wavfile):
-        self.playwavs[self.playWavEngineId][1](self,wavfile)
+    # ---------------------------------------------------------------- воспроизведение и разбор фраз
+    def play_wav(self, wavfile):
+        self.playwavs[self.playWavEngineId][1](self, wavfile)
 
-
-    # -------- raw txt running -----------------
-    def run_input_str(self,voice_input_str,func_before_run_cmd = None): # voice_input_str - строка распознавания голоса, разделенная пробелами
-                # пример: "ирина таймер пять"
-        haveRun = False
-        if voice_input_str == None:
+    def run_input_str(self, voice_input_str, func_before_run_cmd=None):
+        """Разбор распознанной фразы: «ирина таймер пять» -> команда «таймер пять».
+        В контексте (диалог, игра) фраза выполняется целиком, без имени."""
+        if voice_input_str is None:
+            return False
+        if self.logPolicy == "all":
+            print("Input" + (" (in context)" if self.context is not None else "") + ":", voice_input_str)
+        try:
+            words = voice_input_str.split(" ")
+            if self.context is None:
+                for ind, callname in enumerate(words):
+                    if callname not in self.voiceAssNames:
+                        continue
+                    self.cur_callname = callname
+                    if self.logPolicy == "cmd":
+                        print("Input (cmd): ", voice_input_str)
+                    command = " ".join(words[ind + 1:])
+                    if callname in self.voiceAssNameRunCmd:
+                        command = self.voiceAssNameRunCmd[callname] + " " + command
+                    if func_before_run_cmd is not None:
+                        func_before_run_cmd()
+                    self.execute_next(command, None)
+                    return True
+                return False
+            if self.logPolicy == "cmd":
+                print("Input (cmd in context): ", voice_input_str)
+            if func_before_run_cmd is not None:
+                func_before_run_cmd()
+            self.execute_next(voice_input_str, self.context)
+            return True
+        except Exception:
+            print(traceback.format_exc())
             return False
 
-        if self.logPolicy == "all":
-            if self.context == None:
-                print("Input: ",voice_input_str)
-            else:
-                print("Input (in context): ",voice_input_str)
-
-        try:
-            voice_input = voice_input_str.split(" ")
-            #callname = voice_input[0]
-            haveRun = False
-            if self.context == None:
-                for ind in range(len(voice_input)):
-                    callname = voice_input[ind]
-
-                    if callname in self.voiceAssNames: # найдено имя ассистента
-                        self.cur_callname = callname
-                        if self.logPolicy == "cmd":
-                            print("Input (cmd): ",voice_input_str)
-
-
-                        command_options = " ".join([str(input_part) for input_part in voice_input[(ind+1):len(voice_input)]])
-                        if callname in self.voiceAssNameRunCmd:
-                            command_options = self.voiceAssNameRunCmd.get(callname)+" "+command_options
-                            print("Modified input, added ", self.voiceAssNameRunCmd.get(callname))
-
-                        # running some cmd before run cmd
-                        if func_before_run_cmd != None:
-                            func_before_run_cmd()
-
-
-                        #context = self.context
-                        #self.context_clear()
-                        self.execute_next(command_options, None)
-                        haveRun = True
-                        break
-            else:
-                if self.logPolicy == "cmd":
-                    print("Input (cmd in context): ",voice_input_str)
-
-                # running some cmd before run cmd
-                if func_before_run_cmd != None:
-                    func_before_run_cmd()
-
-                self.execute_next(voice_input_str, self.context)
-                haveRun = True
-
-        except Exception as err:
-            print(traceback.format_exc())
-
-        return haveRun
-
-    # ------------ context handling functions ----------------
-
-    def context_set(self,context,duration = None):
-        if duration == None:
+    # ---------------------------------------------------------------- контекст
+    def context_set(self, context, duration=None):
+        if duration is None:
             duration = self.contextDefaultDuration
-
         self.context_clear()
-
         self.context = context
         self.contextTimerLastDuration = duration
-        self.contextTimer = Timer(duration,self._context_clear_timer)
+        self.contextTimer = Timer(duration, self._context_clear_timer)
+        self.contextTimer.daemon = True
+        self.contextTimer.start()
 
-        remoteTTSList = self.remoteTTS.split(",")
-        if self.contextRemoteWaitForCall and ("saytxt" in remoteTTSList or "saywav" in remoteTTSList):
-            pass # wait for run context timer
-        else:
-            self.contextTimer.start()
-
-
-
-    #def _timer_context
     def _context_clear_timer(self):
-        print("Context cleared after timeout")
+        print("Контекст сброшен по таймауту")
         context = self.context
         self.contextTimer = None
         self.context_clear()
@@ -796,72 +386,22 @@ class VACore(JaaCore):
 
     def context_clear(self):
         self.context = None
-        if self.contextTimer != None:
+        if self.contextTimer is not None:
             self.contextTimer.cancel()
             self.contextTimer = None
 
-    # ----------- display info functions ------
-
+    # ---------------------------------------------------------------- вывод при запуске
     def display_init_info(self):
-        cprint("VoiceAssistantCore v{0}:".format(version), "blue", end=' ')
-        print("run ONLINE" if self.isOnline else "run OFFLINE")
+        cprint(f"Ирина, ядро v{version}:", "blue", end=" ")
+        print("онлайн-команды включены" if self.isOnline else "только офлайн-команды")
+        self.format_print_key_list("Озвучка", self.ttss.keys())
+        self.format_print_key_list("Проигрывание WAV", self.playwavs.keys())
+        self.format_print_key_list("Имена помощника", self.voiceAssNames)
+        cprint("Команды плагинов " + "#" * 55, "blue")
+        for plugin, cmds in self.plugin_commands.items():
+            self.format_print_key_list(plugin, cmds)
+        cprint("#" * 72, "blue")
 
-        self.format_print_key_list("TTS engines", self.ttss.keys())
-        self.format_print_key_list("PlayWavs engines", self.playwavs.keys())
-        self.format_print_key_list("FuzzyProcessor engines", self.fuzzy_processors.keys())
-        self.format_print_key_list("Assistant names", self.voiceAssNames)
-
-
-        cprint("Режим работы плагинов (параметр plugin_types в core.json): "+",".join(self.plugin_types)+" "+"#"*20, "blue")
-
-        if ("classic" in self.plugin_types):
-            cprint("- Классические плагины (classic) ВКЛЮЧЕНЫ (вы должны ТОЧНО указывать команды, например, ирина привет)", "green")
-        else:
-            cprint("- Классические плагины (classic) ВЫКЛЮЧЕНЫ", "red")
-
-        if ("ai" in self.plugin_types):
-            cprint("- AI-плагины (ai) ВКЛЮЧЕНЫ (команды в свободной форме в зависимости от плагинов)", "green")
-        else:
-            cprint("- AI-плагины (classic) ВЫКЛЮЧЕНЫ", "red")
-
-        if ("classic" in self.plugin_types):
-            cprint("Classic commands list: "+"#"*55, "blue")
-            for plugin in self.plugin_commands:
-                self.format_print_key_list(plugin, self.plugin_commands[plugin])
-            cprint("#"*80, "blue")
-
-        if ("ai" in self.plugin_types):
-            # cprint("AI settings check: " + "#" * 55, "blue")
-            if self.openai_base_url == "https://api.vsegpt.ru/v1":
-                if self.openai_key == "":
-                    cprint("Для AI-плагинов установлена API-точка доступа VseGPT, но не установлен API-ключ; работать плагины не будут. Получите ваш ключ бесплатно после регистрации: https://vsegpt.ru/Reg или установите другую точку доступа.",
-                           "red")
-
-            cprint("AI functions list: " + "#" * 55, "blue")
-            if len(self.ai_tools.keys()) > 0:
-                print(", ".join(self.ai_tools.keys()))
-            else:
-                cprint("AI-плагины не зарегистрировали ни одного навыка. Добавьте AI-плагины в вашу систему.", "red")
-            cprint("#" * 80, "blue")
-
-
-
-
-
-        # dump assistant names, cmds, numbers to file
-
-        # with open("options/commandslist.txt", 'w', encoding="utf-8") as f:
-        #     for k1 in self.voiceAssNames:
-        #         f.write(k1 + "\n")
-        #     for plugin in self.plugin_commands:
-        #         for k in self.plugin_commands[plugin]:
-        #             ar_k = str(k).split("|")
-        #             for k1 in ar_k:
-        #                 f.write(k1 + "\n")
-        #     import utils.num_to_text_ru
-        #     for i in range(101):
-        #         f.write(utils.num_to_text_ru.num2text(i)+"\n")
-
-    def format_print_key_list(self, key:str, value:list):
-        print(colored(key+": ", "blue")+", ".join(value))
-
+    @staticmethod
+    def format_print_key_list(key: str, value):
+        print(colored(key + ": ", "blue") + ", ".join(value))

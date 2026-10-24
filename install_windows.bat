@@ -27,7 +27,7 @@ if not exist .venv\Scripts\python.exe (
 )
 
 echo ==^> Ставлю пакеты (несколько минут)
-.venv\Scripts\python -m pip install --disable-pip-version-check -r requirements-rk3528.txt
+.venv\Scripts\python -m pip install --disable-pip-version-check -r requirements.txt
 if errorlevel 1 goto failed
 
 .venv\Scripts\python scripts\windows\setup_windows.py

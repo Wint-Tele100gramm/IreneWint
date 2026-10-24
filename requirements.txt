@@ -1,16 +1,28 @@
-wikipedia-api~=0.5.4
-pyttsx3~=2.90
-vosk~=0.3.45
-vosk-tts==0.3.52
-termcolor~=1.1.0
-sounddevice
-soundfile
-websockets==15.0.1
-pyautogui
-requests
-numpy
-audioplayer
-python-dateutil~=2.6.0
-gradio~=3.28.3
-fsspec==2023.1.0
-elevenlabs==1.0.3
+# Зависимости Ирины: ТВ-приставка (aarch64, Python 3.11–3.13) или Windows/Linux-компьютер.
+#
+# Системные пакеты (ставит scripts/rk3528/install.sh):
+#   libportaudio2 libsndfile1 mpv alsa-utils
+#
+# Установка:  scripts/rk3528/install.sh (приставка) или install_windows.bat (Windows)
+
+# Ядро Ирины
+termcolor>=2.4
+requests>=2.32
+python-dateutil>=2.9
+
+# Распознавание речи (офлайн): потоковая модель Vosk через sherpa-onnx
+sherpa-onnx>=1.12
+
+# Запись и воспроизведение звука
+sounddevice>=0.5
+soundfile>=0.12
+numpy>=2.1
+
+# Озвучка (офлайн). Тянет onnxruntime, для cp313/aarch64 колёса есть начиная с 1.20
+vosk-tts>=0.3.56
+
+# Сервер комнат (runva_rooms.py) для клиентов ESP32
+websockets>=13.0
+
+# Яндекс Музыка (плагин plugin_yandex_music)
+yandex-music>=2.2
