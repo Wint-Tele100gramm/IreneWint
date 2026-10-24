@@ -92,6 +92,8 @@ uint32_t silenceMs = 0, speechMs = 0;
 uint64_t levelSum = 0;
 uint32_t levelCount = 0;
 uint32_t clipFrames = 0;             // кадры фразы с перегрузкой
+uint64_t voicedSum = 0;              // уровень только по кадрам с голосом (без пауз и хвоста тишины)
+uint32_t voicedCount = 0;
 // живой индикатор для веб-интерфейса
 volatile bool meterOn = false;
 float meterPeak = 0;                 // максимум уровня за интервал
@@ -396,7 +398,7 @@ void playerTask(void*) {
     size_t n = xStreamBufferReceive(audioBuf, in, sizeof(in), pdMS_TO_TICKS(30));
     if (n >= 2) {
       int samples = n / 2;
-      int vol = volumePct;
+      int vol = volumePct * VOLUME_LIMIT_PCT / 100;   // предел громкости: защита от просадки питания
       int32_t k = vol * vol;                        // квадратичная шкала громкости, 0..10000
       for (int i = 0; i < samples; i++) {
         int32_t s = (int32_t)in[i] * k / 10000;
@@ -589,24 +591,26 @@ void queueFrame(const int16_t* f) {
 // короткие щелчки не учитываем, шум не поднимаем выше порога, при перегрузке снижаем сразу.
 void agcUpdate(uint32_t level) {
   if (!cfg.agc || level == 0) return;
+  if (speechMs < 400 || voicedCount < 10) return;             // щелчок, хлопок, стук — не повод менять
   float before = cfg.micGainDb;
   float step;
-  if (clipFrames >= 3 || level > AGC_CLIP_LEVEL) {
-    step = -AGC_STEP_MAX_DB;                                  // искажения — вниз без раздумий
+  if (level > AGC_CLIP_LEVEL || (clipFrames >= AGC_CLIP_FRAMES && level > AGC_TARGET)) {
+    step = -AGC_STEP_MAX_DB;                                  // речь с искажениями — вниз без раздумий
   } else {
-    if (speechMs < 500) return;                               // щелчок, хлопок — не повод менять
     float err = 20.0f * log10f((float)AGC_TARGET / (float)level);
-    step = constrain(err / 3.0f, -AGC_STEP_MAX_DB, AGC_STEP_MAX_DB);
+    // вверх — быстрее (тихую речь важнее не пропустить), вниз — осторожнее
+    step = constrain(err > 0 ? err / 2.0f : err / 3.0f, -AGC_STEP_MAX_DB, AGC_STEP_MAX_DB);
     if (fabsf(step) < 0.5f) return;                           // и так хорошо
   }
   float target = before + step;
   if (step > 0) {
-    // потолок по шуму: усиленный шум должен остаться заметно ниже порога речи
-    float noiseCeil = before + 20.0f * log10f((cfg.vadLevel * 0.5f) / max(noiseFloor, 1.0f));
+    // потолок по шуму: порог речи = шум × VAD_START_RATIO должен остаться заметно ниже уровня речи,
+    // иначе тихую речь перестанет быть слышно на фоне шума
+    float noiseCeil = before + 20.0f * log10f((float)AGC_NOISE_MAX / max(noiseFloor, 1.0f));
     target = min(target, max(noiseCeil, before));
     target = min(target, (float)cfg.agcMaxDb);
   }
-  target = constrain(target, 0.0f, 30.0f);
+  target = constrain(target, (float)AGC_MIN_DB, 30.0f);
   if (fabsf(target - before) < 0.1f) return;
   setGain(target);
   noiseFloor *= powf(10.0f, (target - before) / 20.0f);       // шум в новом масштабе
@@ -616,7 +620,9 @@ void agcUpdate(uint32_t level) {
 
 void endSpeech() {
   flushPacket();
-  uint32_t level = levelCount ? (uint32_t)(levelSum / levelCount) : 0;
+  // уровень фразы — по кадрам с голосом: паузы между словами и хвост тишины его не занижают
+  uint32_t level = voicedCount ? (uint32_t)(voicedSum / voicedCount)
+                               : (levelCount ? (uint32_t)(levelSum / levelCount) : 0);
   if (wsConnected) sendVad(false, level);
   // для настройки чувствительности: хорошая речь — уровень 1500–5000, шум — в разы меньше порога
   Serial.printf("Фраза %.1f с: уровень речи %u, шум %.0f, порог %d, усиление %.1f дБ%s\n",
@@ -684,6 +690,8 @@ void processMic() {
       levelSum = 0;
       levelCount = 0;
       clipFrames = 0;
+      voicedSum = 0;
+      voicedCount = 0;
       packetFrames = 0;
       sendVad(true, 0);
       // отправляем звук, записанный до начала речи (включая текущий кадр)
@@ -700,8 +708,13 @@ void processMic() {
   levelSum += (uint32_t)rms;
   levelCount++;
   if (clipped > 4) clipFrames++;
-  if (rms < max(noiseFloor * 2.0f, (float)cfg.vadLevel * 0.6f)) silenceMs += 20;
-  else silenceMs = 0;
+  if (rms < max(noiseFloor * 2.0f, (float)cfg.vadLevel * 0.6f)) {
+    silenceMs += 20;
+  } else {
+    silenceMs = 0;
+    voicedSum += (uint32_t)rms;
+    voicedCount++;
+  }
   uint32_t hang = (millis() < wakeUntil) ? cfg.hangMs * 2 : cfg.hangMs;
   if (silenceMs >= hang || speechMs >= VAD_MAX_MS) endSpeech();
 }
