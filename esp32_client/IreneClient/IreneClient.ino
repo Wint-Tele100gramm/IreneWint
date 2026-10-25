@@ -83,6 +83,10 @@ int32_t micRaw[FRAME * 2];           // оба слота I2S (L и R): микр
 int micSlot = MIC_SLOT < 0 ? 0 : MIC_SLOT;   // какой слот читаем (выбирается автоматически)
 float slotActivity[2] = {0, 0};      // «живость» слотов: средний модуль разности соседних отсчётов
 int slotFrames = 0, slotVotes = 0;
+static const int32_t GLITCH_MIN = 1 << 16;     // сбой — не меньше этого (в 24-битных единицах)
+static const int GLITCH_RATIO = 16;            // ...и в 16 раз больше среднего шага сигнала в кадре
+int32_t glitchTail[4] = {0, 0, 0, 0};          // последние отсчёты прошлого кадра (фильтру нужны соседи)
+uint32_t glitchCount = 0;
 int16_t frame16[FRAME];
 int16_t preroll[PREROLL_FRAMES][FRAME];
 int prerollHead = 0, prerollCount = 0;
@@ -631,8 +635,10 @@ void endSpeech() {
                                : (levelCount ? (uint32_t)(levelSum / levelCount) : 0);
   if (wsConnected) sendVad(false, level);
   // для настройки чувствительности: хорошая речь — уровень 1500–5000, шум — в разы меньше порога
-  Serial.printf("Фраза %.1f с: уровень речи %u, шум %.0f, порог %d, усиление %.1f дБ%s\n",
-                speechMs / 1000.0f, level, noiseFloor, cfg.vadLevel, cfg.micGainDb, cfg.agc ? " (авто)" : "");
+  Serial.printf("Фраза %.1f с: уровень речи %u, шум %.0f, порог %d, усиление %.1f дБ%s, убрано щелчков %u\n",
+                speechMs / 1000.0f, level, noiseFloor, cfg.vadLevel, cfg.micGainDb, cfg.agc ? " (авто)" : "",
+                glitchCount);
+  glitchCount = 0;
   agcUpdate(level);
   inSpeech = false;
   loudFrames = 0;
@@ -671,17 +677,57 @@ void trackMicSlot() {
   slotFrames = 0;
 }
 
+// Одиночные сбои шины I2S: изредка отсчёт (или два подряд) читается с ошибкой в старших битах — на записи это
+// щелчок на всю шкалу. Отсчёт заменяется медианой пяти соседних, если отскочил от неё в 16 раз дальше среднего
+// шага сигнала в этом кадре: речь (даже громкая и с шипящими) так не прыгает, сбой — один-два отсчёта на фоне
+// плавного сигнала. Порог следует за громкостью, поэтому громкую речь фильтр не трогает. Задержка — 2 отсчёта.
+
+static int32_t median5(int32_t a, int32_t b, int32_t c, int32_t d, int32_t e) {
+  int32_t v[5] = {a, b, c, d, e};
+  for (int i = 1; i < 5; i++) {                      // вставками: 5 чисел
+    int32_t k = v[i];
+    int j = i - 1;
+    while (j >= 0 && v[j] > k) { v[j + 1] = v[j]; j--; }
+    v[j + 1] = k;
+  }
+  return v[2];
+}
+
+int deglitch(int32_t* out) {
+  int32_t ext[FRAME + 4];
+  memcpy(ext, glitchTail, sizeof(glitchTail));
+  for (int i = 0; i < FRAME; i++) ext[i + 4] = micRaw[2 * i + micSlot] >> 8;
+  int fixed = 0;
+  int64_t steps = 0;
+  for (int i = 1; i < FRAME + 4; i++) steps += abs(ext[i] - ext[i - 1]);
+  int64_t thr = max((int64_t)GLITCH_MIN, steps * GLITCH_RATIO / (FRAME + 3));
+  // выход i соответствует ext[i + 2]: у каждого отсчёта есть по два соседа с каждой стороны
+  for (int i = 0; i < FRAME; i++) {
+    int32_t x = ext[i + 2];
+    int32_t m = median5(ext[i], ext[i + 1], x, ext[i + 3], ext[i + 4]);
+    if ((int64_t)abs(x - m) > thr) { x = m; ext[i + 2] = m; fixed++; }
+    out[i] = x;
+  }
+  memcpy(glitchTail, ext + FRAME, sizeof(glitchTail));
+  return fixed;
+}
+
 void processMic() {
   size_t bytesRead = 0;
   if (i2s_read(MIC_PORT, micRaw, sizeof(micRaw), &bytesRead, pdMS_TO_TICKS(100)) != ESP_OK) return;
   if (bytesRead < sizeof(micRaw)) return;
   trackMicSlot();
 
-  // 32 бита -> 16 бит, убираем постоянную составляющую, считаем уровень
+  // 24-битные отсчёты живого слота + убираем одиночные сбои шины I2S (щелчки)
+  int32_t clean[FRAME];
+  int glitches = deglitch(clean);
+  if (glitches) glitchCount += glitches;
+
+  // 24 бита -> 16 бит, убираем постоянную составляющую, считаем уровень
   uint64_t sq = 0;
   int clipped = 0;
   for (int i = 0; i < FRAME; i++) {
-    float x = (float)(micRaw[2 * i + micSlot] >> 8) * (micGain / 256.0f);   // 24 бита -> 16 бит с усилением
+    float x = (float)clean[i] * (micGain / 256.0f);                         // 24 бита -> 16 бит с усилением
     float y = x - hpPrevX + 0.995f * hpPrevY;
     hpPrevX = x;
     hpPrevY = y;
