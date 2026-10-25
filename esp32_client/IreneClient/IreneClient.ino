@@ -24,6 +24,7 @@
 #include <ArduinoJson.h>
 #include <freertos/stream_buffer.h>
 #include "driver/i2s.h"
+#include "driver/gpio.h"
 #include "esp_idf_version.h"
 #include "esp_system.h"
 #include "esp_heap_caps.h"
@@ -352,6 +353,14 @@ void setupMic() {
   p.data_out_num = I2S_PIN_NO_CHANGE;
   p.data_in_num = MIC_SD;
   ESP_ERROR_CHECK(i2s_set_pin(MIC_PORT, &p));
+  // Помехоустойчивость шины микрофона:
+  //  - SD подтягиваем к земле (так требует даташит INMP441: в чужом слоте выход микрофона отключён, и
+  //    «висящая» линия ловит наводки);
+  //  - тактовые линии — с минимальной силой выхода: фронты мягче, меньше «звона» на проводах,
+  //    из-за которого микрофон видит лишние такты и отдаёт битые отсчёты (щелчки).
+  gpio_pulldown_en((gpio_num_t)MIC_SD);
+  gpio_set_drive_capability((gpio_num_t)MIC_SCK, GPIO_DRIVE_CAP_0);
+  gpio_set_drive_capability((gpio_num_t)MIC_WS, GPIO_DRIVE_CAP_0);
 }
 
 void setupAmp() {
@@ -374,6 +383,10 @@ void setupAmp() {
   p.data_out_num = AMP_DIN;
   p.data_in_num = I2S_PIN_NO_CHANGE;
   ESP_ERROR_CHECK(i2s_set_pin(AMP_PORT, &p));
+  // мягкие фронты на линиях усилителя: меньше помех соседним проводам микрофона
+  gpio_set_drive_capability((gpio_num_t)AMP_BCLK, GPIO_DRIVE_CAP_0);
+  gpio_set_drive_capability((gpio_num_t)AMP_LRC, GPIO_DRIVE_CAP_0);
+  gpio_set_drive_capability((gpio_num_t)AMP_DIN, GPIO_DRIVE_CAP_0);
   i2s_zero_dma_buffer(AMP_PORT);
 }
 
@@ -701,11 +714,21 @@ int deglitch(int32_t* out) {
   int64_t steps = 0;
   for (int i = 1; i < FRAME + 4; i++) steps += abs(ext[i] - ext[i - 1]);
   int64_t thr = max((int64_t)GLITCH_MIN, steps * GLITCH_RATIO / (FRAME + 3));
+  // меньше этого (≈300 на выходе при текущем усилении) отскок не считается сбоем — это обычный шум
+  int32_t minDev = (int32_t)(300.0f * 256.0f / max(micGain, 0.1f));
   // выход i соответствует ext[i + 2]: у каждого отсчёта есть по два соседа с каждой стороны
   for (int i = 0; i < FRAME; i++) {
     int32_t x = ext[i + 2];
     int32_t m = median5(ext[i], ext[i + 1], x, ext[i + 3], ext[i + 4]);
-    if ((int64_t)abs(x - m) > thr) { x = m; ext[i + 2] = m; fixed++; }
+    int32_t dev = abs(x - m);
+    bool bad = (int64_t)dev > thr;                   // сбой на всю шкалу
+    if (!bad && dev > minDev) {
+      // битый отсчёт посреди речи: соседи меняются плавно, а он один отскочил в разы дальше их шага
+      int32_t s1 = abs(ext[i + 1] - ext[i + 3]), s2 = abs(ext[i + 1] - ext[i]), s3 = abs(ext[i + 4] - ext[i + 3]);
+      int32_t smooth = max(max(s1, s2), max(s3, (int32_t)1));
+      bad = dev > 4 * smooth;
+    }
+    if (bad) { x = m; ext[i + 2] = m; fixed++; }
     out[i] = x;
   }
   memcpy(glitchTail, ext + FRAME, sizeof(glitchTail));
