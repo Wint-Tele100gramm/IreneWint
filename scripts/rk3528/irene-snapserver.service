@@ -1,0 +1,12 @@
+[Unit]
+Description=Snapcast server for Irene multiroom music
+After=network-online.target
+
+[Service]
+ExecStartPre=/bin/mkdir -p @RUNDIR@ @DATADIR@
+ExecStart=/usr/bin/snapserver -c %h/.config/irene/snapserver.conf
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

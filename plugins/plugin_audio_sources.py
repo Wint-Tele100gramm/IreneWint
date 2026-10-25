@@ -1,5 +1,5 @@
-# Приём звука с телефонов: Bluetooth-сопряжение голосом и подсказки по AirPlay/DLNA.
-# Сами приёмники (shairport-sync, gmediarender, bt-agent) ставит scripts/rk3528/install.sh.
+# Приём звука с телефонов: Bluetooth-сопряжение голосом и подсказки по DLNA.
+# Сами приёмники (gmediarender, bt-agent) ставит scripts/rk3528/install.sh.
 #
 # Примеры: "ирина режим сопряжения", "ирина подключи телефон", "ирина блютуз выключи"
 
@@ -15,11 +15,10 @@ logger = logging.getLogger(__name__)
 
 def start(core: VACore):
     manifest = {
-        "name": "Звук с телефона (Bluetooth / AirPlay / DLNA)",
+        "name": "Звук с телефона (Bluetooth / DLNA)",
         "version": "1.0",
         "require_online": False,
-        "description": "Bluetooth-сопряжение голосом. AirPlay (iOS) и DLNA (Android) работают всегда, "
-                       "приёмник называется 'Ирина'.",
+        "description": "Bluetooth-сопряжение голосом. DLNA (Android) работает всегда, приёмник называется 'Ирина'.",
         "commands": {
             "режим сопряжения|подключи телефон|включи блютуз|блютуз|сопряжение": bt_pair,
             "выключи блютуз|отключи блютуз|блютуз выключи": bt_off,
@@ -71,6 +70,5 @@ def bt_off(core: VACore, phrase: str):
 
 
 def howto(core: VACore, phrase: str):
-    core.say("С айфона: пункт управления, эйрплей, Ирина. "
-             "С андроида: скажите режим сопряжения и подключитесь по блютузу к Irene, "
-             "или выберите Ирину в приложении с поддержкой DLNA")
+    core.say("Скажите: режим сопряжения, и подключите телефон по блютузу к Irene. "
+             "С андроида можно ещё выбрать Ирину в приложении с поддержкой DLNA")

@@ -131,6 +131,7 @@ audio { height: 32px; max-width: 100%; }
   </div>
 
   <section class="tab active" id="tab-rooms">
+    <div class="card" id="music" hidden style="margin-bottom:14px"></div>
     <div class="grid" id="rooms"></div>
     <p class="hint">Уровень речи хорошо держать в зелёной полосе (1500–5000). Ниже — прибавьте усиление
       микрофона (или включите автоусиление), выше 15000 — убавьте. Оранжевая риска — с какого уровня клиент считает
@@ -245,6 +246,7 @@ async function onEvent(name, data) {
   else if (name === "phrase") { state.phrases.push(data); state.phrases = state.phrases.slice(-100); renderPhrases(); }
   else if (name === "log") { state.log.push(data); state.log = state.log.slice(-300); renderLog(); }
   else if (name === "yandex") renderYandex(data);
+  else if (name === "music") { state.music = data; renderMusic(); }
 }
 $("#loginForm").addEventListener("submit", async e => {
   e.preventDefault();
@@ -259,7 +261,7 @@ async function start() {
   $("#login").hidden = true; $("#app").hidden = false;
   const s = await call("state");
   Object.assign(state, s);
-  renderRooms(); renderRoomSelects(); renderPhrases(); renderLog(); renderSys(s.system); showRestart(s.restart_needed);
+  renderRooms(); renderRoomSelects(); renderPhrases(); renderLog(); renderSys(s.system); showRestart(s.restart_needed); renderMusic();
   if (!started) { started = true; setInterval(async () => { try { renderSys(await call("system")); } catch {} }, 15000); }
   const tab = store.get("irene_tab"); if (tab) openTab(tab);
 }
@@ -349,6 +351,43 @@ function setMeter(id, v, noise) {
   if (t) t.textContent = `Сейчас ${v}` + (noise != null ? `, шум ${noise}` : "") + (thr ? `, речь от ${Math.round(thr)}` : "")
     + (v > 15000 ? " — слишком громко" : "");
 }
+// ---------------------------------------------------------------- музыка (мультирум)
+const lineName = id => /^stream(\d+)$/.test(id) ? "Линия " + id.slice(6) : id === "local" ? "Плеер" : id;
+function lineText(l) { return !l.playing ? "тишина" : (l.what || "музыка") + (l.paused ? " (пауза)" : ""); }
+function renderMusic() {
+  const m = state.music, box = $("#music");
+  if (!m || !m.lines || !m.lines.length) { box.hidden = true; return; }
+  box.hidden = false;
+  const names = Object.fromEntries(state.rooms.map(r => [r.id, r.name]));
+  const rows = m.lines.map(l => {
+    const rooms = Object.entries(m.rooms || {}).filter(([, line]) => line === l.id).map(([id]) => names[id] || (id === "local" ? "Приставка" : id));
+    return el("div", { class: "item" }, el("span", { class: "who", style: "width:5.5em" }, lineName(l.id)),
+      el("span", { class: "what" + (l.playing ? "" : " sub") }, lineText(l)),
+      el("span", { class: "who" }, m.multiroom ? (rooms.join(", ") || "никто не слушает") : ""));
+  });
+  box.replaceChildren(el("h3", {}, el("span", { class: "grow" }, "Музыка"),
+    el("span", { class: "badge " + (m.multiroom ? "ok" : "off") }, m.multiroom ? "мультирум" : "без мультирума")),
+    el("div", { class: "list", style: "margin-top:10px" }, ...rows),
+    el("p", { class: "hint" }, m.multiroom ? "Две независимые линии: голосом — «включи музыку», «добавь кухню», «как в спальне», "
+      + "«перенеси музыку на кухню», «выключи музыку везде». Или выберите линию в карточке комнаты."
+      : "snapserver не запущен — музыка играет только на этом компьютере."));
+}
+function musicRow(r) {
+  const m = state.music || {};
+  if (!m.multiroom || !r.connected || !(m.rooms && r.id in m.rooms)) return [];
+  const sel = el("select", { class: "grow", title: "Какую музыку слушает комната" });
+  sel.append(el("option", { value: "", selected: !r.music }, "Выключена"));
+  for (const l of m.lines) sel.append(el("option", { value: l.id, selected: r.music === l.id }, `${lineName(l.id)} — ${lineText(l)}`));
+  sel.addEventListener("focus", () => roomsFocus = true);
+  sel.addEventListener("blur", () => roomsFocus = false);
+  sel.addEventListener("change", async () => {
+    roomsFocus = false;
+    const r2 = await act(call("music.assign", { id: r.id, line: sel.value || null }), sel.value ? "Комната подключена" : "Музыка выключена");
+    state.music = r2; renderMusic();
+  });
+  return [el("div", { class: "row" }, el("span", { class: "sub", style: "width:5.5em" }, "Музыка"), sel),
+    slider("Громкость", r.music_volume ?? 100, 0, 100, "", false, v => call("music.volume", { id: r.id, value: v }), r.id + "mv")];
+}
 let roomsFocus = false;
 function renderRooms(force) {
   const box = $("#rooms");
@@ -392,6 +431,7 @@ function renderRooms(force) {
       el("div", { class: "row" }, el("span", { class: "sub" }, "Комната"), sel),
     );
     card.append(slider("Голос", r.volume ?? 70, 0, 100, "", !r.connected, v => call("room.volume", { id: r.id, value: v }), r.id + "v"));
+    card.append(...musicRow(r));
     const remoteCfg = !r.local && (r.caps || []).includes("config");
     if (r.local) {
       card.append(slider("Микрофон", r.mic_gain_db ?? 0, -10, 30, " дБ", !r.connected, v => call("room.mic_gain", { id: r.id, value: v }), r.id + "g"));

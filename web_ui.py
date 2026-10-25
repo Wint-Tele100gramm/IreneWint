@@ -57,6 +57,8 @@ SETTINGS = [
         {"key": "duck_volume", "label": "Громкость, пока Ирина слушает команду", "type": "number"},
         {"key": "max_bitrate", "label": "Качество, кбит/с", "type": "select",
          "choices": [[128, "128"], [192, "192"], [320, "320"]]},
+        {"key": "multiroom", "label": "Мультирум (Snapcast)", "type": "bool",
+         "help": "Две независимые линии музыки по комнатам. Нужен snapserver (ставит install.sh)"},
     ]},
     {"id": "time", "title": "Время", "file": "plugin_datetime", "fields": [
         {"key": "style", "label": "Как называть время", "type": "select", "live": True,
@@ -156,7 +158,12 @@ class WebUI:
             if live:
                 self._send_all(json.dumps({"event": "meter", "data": live}))
             if n % 8 == 0:
-                self._send_all(json.dumps({"event": "rooms", "data": self.rooms_state()}, ensure_ascii=False))
+                # состояние музыки спрашивается у snapserver — не в цикле событий
+                loop = asyncio.get_running_loop()
+                rooms = await loop.run_in_executor(None, self.rooms_state)
+                music = await loop.run_in_executor(None, self.music_state)
+                self._send_all(json.dumps({"event": "rooms", "data": rooms}, ensure_ascii=False))
+                self._send_all(json.dumps({"event": "music", "data": music}, ensure_ascii=False))
 
     def _sync_meters(self):
         """Клиенты шлют живой уровень, только пока открыта страница: зря не нагружаем Wi-Fi."""
@@ -276,8 +283,24 @@ class WebUI:
             if rid not in seen:
                 result.append({"id": rid, "name": name, "connected": False, "local": rid == "local",
                                "assigned": True, "levels": []})
+        music = self.music_state()
+        for r in result:
+            if r["id"] in music.get("rooms", {}):
+                r["music"] = music["rooms"][r["id"]]
+                r["music_volume"] = music["volumes"].get(r["id"])
         result.sort(key=lambda r: (not r["connected"], r["name"]))
         return result
+
+    def music_state(self):
+        """Линии музыки и какая комната что слушает (плагин Яндекс Музыки, мультирум Snapcast)."""
+        fn = getattr(self.core, "music_status", None)
+        if fn is None:
+            return {}
+        try:
+            return fn()
+        except Exception as e:
+            logger.debug(f"music_status: {e}")
+            return {}
 
     def api_state(self, params):
         return {
@@ -285,6 +308,7 @@ class WebUI:
             "phrases": list(self.phrases),
             "log": list(self.log)[-150:],
             "system": self.system_info(),
+            "music": self.music_state(),
             "restart_needed": self.restart_needed,
             "assistant_names": self.core.voiceAssNames,
         }
@@ -361,6 +385,21 @@ class WebUI:
         room.info.update(cfg)
         logger.info(f"{room.name}: настройки микрофона {cfg}")
         return cfg
+
+    def api_music_assign(self, params):
+        """Комната слушает линию музыки (line: id линии или null — выключить)."""
+        fn = getattr(self.core, "music_assign", None)
+        if fn is None:
+            raise ValueError("Плагин Яндекс Музыки не загружен")
+        fn(params["id"], params.get("line") or None)
+        return self.music_state()
+
+    def api_music_volume(self, params):
+        fn = getattr(self.core, "music_assign", None)
+        if fn is None:
+            raise ValueError("Плагин Яндекс Музыки не загружен")
+        fn(params["id"], None, volume=max(0, min(100, int(params["value"]))))
+        return int(params["value"])
 
     def api_room_say(self, params):
         room = self.server.rooms.get(params.get("id") or "")
@@ -590,39 +629,4 @@ class WebUI:
             self.emit("yandex", self.yandex_login)
 
         threading.Thread(target=run, name="yandex-login", daemon=True).start()
-        return self.yandex_login
-        try:
-            from yandex_music import Client
-        except ImportError:
-            raise ValueError("Библиотека yandex-music не установлена")
-        self.yandex_login = {"state": "starting"}
-
-        def on_code(code):
-            self.yandex_login = {"state": "waiting", "url": code.verification_url, "code": code.user_code}
-            self.emit("yandex", self.yandex_login)
-
-        def run():
-            try:
-                token = Client().device_auth(on_code=on_code)
-                opts = self.core.plugin_options("plugin_yandex_music")
-                if opts is None:
-                    raise RuntimeError("плагин Яндекс Музыки не загружен")
-                opts["token"] = token.access_token
-                self.core.save_plugin_options("plugin_yandex_music", opts)
-                try:
-                    os.chmod(os.path.join(self.core.jaaOptionsPath, "plugin_yandex_music.json"), 0o600)
-                except OSError:
-                    pass
-                self.restart_needed = True
-                self.yandex_login = {"state": "done"}
-                logger.warning("Вход в Яндекс Музыку выполнен, токен сохранён")
-            except Exception as e:
-                self.yandex_login = {"state": "error", "message": str(e)}
-            self.emit("yandex", self.yandex_login)
-
-        threading.Thread(target=run, name="yandex-login", daemon=True).start()
-        for _ in range(50):                        # код обычно приходит за секунду-две
-            if self.yandex_login["state"] != "starting":
-                break
-            time.sleep(0.1)
         return self.yandex_login

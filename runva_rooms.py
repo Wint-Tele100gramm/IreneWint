@@ -20,6 +20,10 @@
 #                             {"type":"config","gain":..,"vad":..,"hang":..,"agc":true,"agc_max":30}
 #                             {"type":"meter","enable":true|false}   (живой индикатор, пока открыт веб-интерфейс)
 #   сервер -> клиент, binary: PCM s16le mono с частотой из tts_start (ответ Ирины)
+#
+# Музыка (прошивка 3.0+, "snap" в caps) идёт не здесь, а через Snapcast: клиент сам подключается к snapserver
+# (порт 1704) с ID = id комнаты, плагин Яндекс Музыки назначает комнатам потоки (utils/multiroom.py).
+# Клиент смешивает ответы Ирины с музыкой и приглушает музыку на время ответа и после "wake".
 
 import argparse
 import asyncio
@@ -67,6 +71,7 @@ DEFAULT_OPTIONS = {
 }
 OPTIONS_FILE = os.path.splitext(os.path.abspath(__file__))[0] + ".json"
 MIC_KEYS = ("gain", "vad", "hang", "agc", "agc_max")   # настройки микрофона клиента (прошивка 2.0+)
+SNAP_RATE = 22050            # частота потоков Snapcast (scripts/rk3528/snapserver.conf) — на ней играют клиенты 3.0+
 
 
 # ------------------------------------------------------------------ комнаты
@@ -227,6 +232,9 @@ class Room:
         """Отправляет ответ клиенту и ждёт, пока он уйдёт (клиент читает со скоростью воспроизведения)."""
         if not self.connected or self.ws is None:
             return
+        if "snap" in self.caps and rate != SNAP_RATE:
+            # прошивка 3.0+ смешивает голос с музыкой Snapcast — усилитель всё время на частоте музыки
+            rate, pcm = resample(rate, pcm, SNAP_RATE)
         self.speaking = True
         try:
             self.server.run_coro(self._send_audio(rate, pcm), wait=True, timeout=len(pcm) / (rate * 2) + 15)
@@ -731,6 +739,15 @@ def read_wav_mono16(path):
     if ch > 1:
         a = a.reshape(-1, ch).mean(axis=1).astype(np.int32)
     return rate, np.clip(a, -32768, 32767).astype("<i2").tobytes()
+
+
+def resample(rate, pcm, to_rate):
+    if rate == to_rate or not pcm:
+        return rate, pcm
+    a = np.frombuffer(pcm, dtype="<i2").astype(np.float32)
+    n = int(len(a) * to_rate / rate)
+    out = np.interp(np.arange(n) * (rate / to_rate), np.arange(len(a)), a)
+    return to_rate, np.clip(out, -32768, 32767).astype("<i2").tobytes()
 
 
 def limit_rate(rate, pcm, max_rate=22050):

@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Установка Ирины на ТВ-приставку (Armbian/Debian, aarch64): RK3528, S905 и другие.
 # Запускать от обычного пользователя (не root) из корня репозитория:
-#     bash scripts/rk3528/install.sh            # всё: Ирина, AirPlay, Bluetooth, DLNA
+#     bash scripts/rk3528/install.sh            # всё: Ирина, мультирум Snapcast, Bluetooth, DLNA
 #     bash scripts/rk3528/install.sh --no-bt    # без Bluetooth
+#     bash scripts/rk3528/install.sh --no-multiroom   # музыка только на динамике приставки (без Snapcast)
 #     bash scripts/rk3528/install.sh --aec      # + эхоподавление PipeWire (опционально)
 #     bash scripts/rk3528/install.sh --lite     # приставка с 1 ГБ ОЗУ: без DLNA и Bluetooth, zram, жёсткий лимит памяти
 #                                               (включается сам, если ОЗУ меньше 1,5 ГБ; --full — отключить)
@@ -14,13 +15,14 @@ set -euo pipefail
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 SCRIPTS="$REPO/scripts/rk3528"
 PYTHON="${PYTHON:-python3.13}"
-WITH_BT=1; WITH_AIRPLAY=1; WITH_DLNA=1; WITH_AEC=0
+WITH_BT=1; WITH_SNAP=1; WITH_DLNA=1; WITH_AEC=0
 MEM_MB=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)
 LITE=0; [ "$MEM_MB" -lt 1500 ] && LITE=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --no-bt) WITH_BT=0 ;;
-    --no-airplay) WITH_AIRPLAY=0 ;;
+    --no-multiroom) WITH_SNAP=0 ;;
+    --no-airplay) ;;   # AirPlay больше не поддерживается — параметр оставлен для старых инструкций
     --no-dlna) WITH_DLNA=0 ;;
     --aec) WITH_AEC=1 ;;
     --lite) LITE=1 ;;
@@ -40,7 +42,7 @@ fi
 
 echo "==> Системные пакеты"
 PKGS="python3-venv bzip2 mpv socat alsa-utils libportaudio2 libsndfile1 pipewire pipewire-pulse pipewire-alsa wireplumber pulseaudio-utils"
-[ $WITH_AIRPLAY = 1 ] && PKGS="$PKGS shairport-sync avahi-daemon"
+[ $WITH_SNAP = 1 ] && PKGS="$PKGS snapserver snapclient"
 [ $WITH_DLNA = 1 ] && PKGS="$PKGS gmediarender gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-pulseaudio"
 [ $WITH_BT = 1 ] && PKGS="$PKGS bluez bluez-tools libspa-0.2-bluetooth"
 [ $LITE = 1 ] && PKGS="$PKGS zram-tools"
@@ -65,7 +67,7 @@ if [ -n "$MISSING" ]; then
   case "$MISSING" in *mpv*|*libportaudio2*|*pipewire-pulse*)
     echo "!! Без этих пакетов Ирина не заработает. Пришлите вывод: sudo apt-get install$MISSING"; exit 1 ;;
   esac
-  echo "!! Остальное необязательно — соответствующая функция (AirPlay/DLNA/Bluetooth) не будет работать."
+  echo "!! Остальное необязательно — соответствующая функция (мультирум/DLNA/Bluetooth) не будет работать."
   echo
 fi
 
@@ -167,12 +169,27 @@ fi
 mkdir -p ~/.config/systemd/user ~/.config/irene
 UNIT_SED="s#@REPO@#$REPO#g"
 
-if [ $WITH_AIRPLAY = 1 ]; then
-  echo "==> AirPlay (iPhone/iPad/Mac): shairport-sync"
-  sudo systemctl disable --now shairport-sync 2>/dev/null || true   # системный вариант не видит PipeWire пользователя
-  sed "$UNIT_SED" "$SCRIPTS/shairport-sync.conf" > ~/.config/irene/shairport-sync.conf
-  sed "$UNIT_SED" "$SCRIPTS/irene-airplay.service" > ~/.config/systemd/user/irene-airplay.service
-  sudo systemctl enable --now avahi-daemon
+# прежние версии ставили AirPlay (shairport-sync) — убираем
+if [ -e ~/.config/systemd/user/irene-airplay.service ]; then
+  echo "==> Убираю AirPlay из прежней установки"
+  systemctl --user disable --now irene-airplay 2>/dev/null || true
+  rm -f ~/.config/systemd/user/irene-airplay.service ~/.config/irene/shairport-sync.conf
+fi
+
+if [ $WITH_SNAP = 1 ] && command -v snapserver >/dev/null; then
+  echo "==> Мультирум: snapserver (две линии музыки) и snapclient для динамика приставки"
+  # системный snapserver из пакета не нужен: наш работает от пользователя, чтобы плеер писал в его fifo
+  sudo systemctl disable --now snapserver snapclient 2>/dev/null || true
+  SNAP_RUN="/run/user/$(id -u)/irene-snap"
+  SNAP_DATA="$HOME/.local/share/irene-snap"
+  SNAP_SED="s#@RUNDIR@#$SNAP_RUN#g; s#@DATADIR@#$SNAP_DATA#g"
+  sed "$SNAP_SED" "$SCRIPTS/snapserver.conf" > ~/.config/irene/snapserver.conf
+  sed "$SNAP_SED" "$SCRIPTS/irene-snapserver.service" > ~/.config/systemd/user/irene-snapserver.service
+  cp "$SCRIPTS/irene-snapclient.service" ~/.config/systemd/user/
+  echo "    snapserver $(snapserver --version 2>/dev/null | head -1 | grep -o '[0-9][0-9.]*' | head -1): порт 1704 (клиенты), 1705 (управление)"
+elif [ $WITH_SNAP = 1 ]; then
+  echo "!! snapserver не установился — мультирума не будет, музыка играет на динамике приставки"
+  WITH_SNAP=0
 fi
 
 if [ $WITH_DLNA = 1 ]; then
@@ -207,7 +224,7 @@ fi
 chmod +x "$SCRIPTS"/*.sh
 systemctl --user daemon-reload
 UNITS="irene"
-[ $WITH_AIRPLAY = 1 ] && UNITS="$UNITS irene-airplay"
+[ $WITH_SNAP = 1 ] && UNITS="irene-snapserver irene-snapclient $UNITS"
 [ $WITH_DLNA = 1 ] && UNITS="$UNITS irene-dlna"
 # shellcheck disable=SC2086
 systemctl --user enable $UNITS
@@ -220,7 +237,7 @@ cat <<EOF
 
 Готово. Дальше:
   1. Веб-интерфейс:   http://$(hostname -I | awk '{print $1}'):8765/  (пароль — ключ клиентов ниже)
-     Там: Home Assistant (адрес и токен), вход в Яндекс Музыку, комнаты, сценарии.
+     Там: Home Assistant (адрес и токен), вход в Яндекс Музыку, комнаты, сценарии, музыка по комнатам.
   2. Клиенты ESP32 (esp32_client/README.md): сервер $(hostname -I | awk '{print $1}'), порт 8765,
      ключ: $ROOMS_TOKEN
   3. Запуск:          systemctl --user start $UNITS

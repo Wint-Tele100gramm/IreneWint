@@ -1,6 +1,6 @@
 [Unit]
 Description=Irene voice assistant
-After=pipewire.service pipewire-pulse.service wireplumber.service
+After=pipewire.service pipewire-pulse.service wireplumber.service irene-snapserver.service
 Wants=pipewire-pulse.service
 
 [Service]

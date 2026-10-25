@@ -73,7 +73,7 @@ fi
 pactl set-default-sink irene_aec_sink
 pactl set-default-source irene_aec_source
 set_barge_in 1
-systemctl --user restart irene irene-airplay 2>/dev/null || systemctl --user restart irene 2>/dev/null || true
+systemctl --user restart irene irene-snapclient 2>/dev/null || systemctl --user restart irene 2>/dev/null || true
 
 cat <<EOF
 Готово: эхоподавление включено, Ирину можно перебивать.
