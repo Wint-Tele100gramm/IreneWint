@@ -79,7 +79,10 @@ volatile int pendingRate = 22050;
 volatile uint32_t playEndMs = 0;
 
 // микрофон и детектор речи
-int32_t micRaw[FRAME];
+int32_t micRaw[FRAME * 2];           // оба слота I2S (L и R): микрофон говорит только в одном из них
+int micSlot = MIC_SLOT < 0 ? 0 : MIC_SLOT;   // какой слот читаем (выбирается автоматически)
+float slotActivity[2] = {0, 0};      // «живость» слотов: средний модуль разности соседних отсчётов
+int slotFrames = 0, slotVotes = 0;
 int16_t frame16[FRAME];
 int16_t preroll[PREROLL_FRAMES][FRAME];
 int prerollHead = 0, prerollCount = 0;
@@ -329,7 +332,9 @@ void setupMic() {
   c.mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX);
   c.sample_rate = SAMPLE_RATE;
   c.bits_per_sample = I2S_BITS_PER_SAMPLE_32BIT;
-  c.channel_format = MIC_CHANNEL_FMT;
+  // читаем оба слота: на ESP32 и ESP32-S3 «левый» канал старого драйвера оказывается разным слотом,
+  // а пустой слот даёт тишину с редкими щелчками — живой выбирается автоматически
+  c.channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT;
   c.communication_format = I2S_COMM_FORMAT_STAND_I2S;
   c.intr_alloc_flags = 0;
   c.I2S_DMA_COUNT = 8;
@@ -441,6 +446,7 @@ void sendHello() {
   doc["drops"] = (uint32_t)wifiDrops;
   doc["chip"] = ESP.getChipModel();
   doc["psram"] = (uint32_t)(ESP.getPsramSize() / 1024);
+  doc["mic_slot"] = micSlot;
   JsonArray caps = doc["caps"].to<JsonArray>();   // что умеет прошивка: сервер покажет нужные настройки
   caps.add("config");
   caps.add("meter");
@@ -633,16 +639,49 @@ void endSpeech() {
   if (millis() > wakeUntil) led(false);
 }
 
+// Какой слот I2S живой. У микрофона даже в тишине есть собственный шум — соседние отсчёты почти всегда различаются;
+// пустой слот стоит на месте (0 / -1) и изредка даёт выбросы на всю шкалу. Считаем долю «живых» отсчётов (0..1).
+void trackMicSlot() {
+  if (MIC_SLOT >= 0) return;                         // слот задан вручную в config.h
+  for (int ch = 0; ch < 2; ch++) {
+    float acc = 0;
+    int32_t prev = micRaw[ch] >> 8;
+    for (int i = 1; i < FRAME; i++) {
+      int32_t cur = micRaw[2 * i + ch] >> 8;
+      int32_t d = cur - prev;
+      if (d < 0) d = -d;
+      if (d > 0 && d < (1 << 20)) acc += 1;    // «живой» отсчёт; выбросы почти на всю шкалу не считаем
+      prev = cur;
+    }
+    slotActivity[ch] += acc / FRAME;
+  }
+  if (++slotFrames < 50) return;                     // оцениваем по секунде звука
+  int other = 1 - micSlot;
+  bool switchIt = slotActivity[other] > slotActivity[micSlot] * 3 + 1;   // в сумме за 50 кадров
+  slotVotes = switchIt ? slotVotes + 1 : 0;
+  static bool reported = false;
+  if (!reported || slotVotes >= 2) {
+    if (slotVotes >= 2 || (!reported && switchIt)) { micSlot = other; slotVotes = 0; noiseFloor = 150; }
+    Serial.printf("Микрофон: слот %d (живых отсчётов: %.0f%% / %.0f%%)%s\n", micSlot, slotActivity[0] * 2,
+                  slotActivity[1] * 2, max(slotActivity[0], slotActivity[1]) / 50 < 0.1f
+                  ? " — оба слота молчат: проверьте провода SD/WS/SCK и питание микрофона" : "");
+    reported = true;
+  }
+  slotActivity[0] = slotActivity[1] = 0;
+  slotFrames = 0;
+}
+
 void processMic() {
   size_t bytesRead = 0;
   if (i2s_read(MIC_PORT, micRaw, sizeof(micRaw), &bytesRead, pdMS_TO_TICKS(100)) != ESP_OK) return;
   if (bytesRead < sizeof(micRaw)) return;
+  trackMicSlot();
 
   // 32 бита -> 16 бит, убираем постоянную составляющую, считаем уровень
   uint64_t sq = 0;
   int clipped = 0;
   for (int i = 0; i < FRAME; i++) {
-    float x = (float)(micRaw[i] >> 8) * (micGain / 256.0f);   // 24 бита -> 16 бит с усилением
+    float x = (float)(micRaw[2 * i + micSlot] >> 8) * (micGain / 256.0f);   // 24 бита -> 16 бит с усилением
     float y = x - hpPrevX + 0.995f * hpPrevY;
     hpPrevX = x;
     hpPrevY = y;
