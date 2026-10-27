@@ -15,6 +15,8 @@
 namespace micproc {
 
 static const int RATE = 16000;
+static const int NS_FRAME_MS = 10;
+static const int NS_FRAME = RATE * NS_FRAME_MS / 1000;   // 160 отсчётов
 static const uint32_t REF_N = 16384;          // ~1 с опорного сигнала при 16 кГц
 static int16_t* refRing = nullptr;
 static uint32_t* refStamp = nullptr;          // номер отсчёта (по времени), который лежит в ячейке
@@ -64,7 +66,7 @@ bool init(int nsMode) {
   chunkRef = (int16_t*)heap_caps_aligned_alloc(16, chunk * 2, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
   chunkOut = (int16_t*)heap_caps_aligned_alloc(16, chunk * 2, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
   if (!chunkIn || !chunkRef || !chunkOut) return false;
-  ns = ns_pro_create(20, nsMode, RATE);
+  ns = ns_pro_create(NS_FRAME_MS, nsMode, RATE);   // библиотека принимает только кадры по 10 мс
   ready = true;
   return true;
 }
@@ -153,7 +155,10 @@ void process(int16_t* frame, int n, bool doAec, bool doNs) {
     inHeadSample += chunk;
   }
   if (midCount >= n) {
-    if (doNs && ns) ns_process(ns, midFifo, frame);
+    if (doNs && ns) {
+      for (int off = 0; off + NS_FRAME <= n; off += NS_FRAME)   // 20 мс = два куска по 10 мс
+        ns_process(ns, midFifo + off, frame + off);
+    }
     else memcpy(frame, midFifo, n * 2);
     memmove(midFifo, midFifo + n, (midCount - n) * 2);
     midCount -= n;
