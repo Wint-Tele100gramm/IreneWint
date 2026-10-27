@@ -219,6 +219,13 @@ if [ $WITH_BT = 1 ]; then
   echo "==> Bluetooth-колонка (Android и iOS)"
   sudo usermod -aG bluetooth "$USER"
   sudo sed -i -E 's/^#?\s*Name\s*=.*/Name = Irene/; s/^#?\s*Class\s*=.*/Class = 0x200414/; s/^#?\s*DiscoverableTimeout\s*=.*/DiscoverableTimeout = 180/' /etc/bluetooth/main.conf
+  # Приставка без монитора: WirePlumber по умолчанию включает Bluetooth-звук только при «активном сеансе за экраном»,
+  # а через SSH такого нет — телефон видит Irene, но подключиться не может («Не удалось подключиться»).
+  mkdir -p ~/.config/wireplumber/bluetooth.lua.d ~/.config/wireplumber/wireplumber.conf.d
+  echo 'bluez_monitor.properties["with-logind"] = false' > ~/.config/wireplumber/bluetooth.lua.d/80-irene-headless.lua
+  printf 'wireplumber.profiles = {\n  main = {\n    monitor.bluez.seat-monitoring = disabled\n  }\n}\n' \
+    > ~/.config/wireplumber/wireplumber.conf.d/80-irene-headless.conf
+  systemctl --user restart wireplumber 2>/dev/null || true
   sudo cp "$SCRIPTS/irene-bt-agent.service" /etc/systemd/system/
   sudo systemctl daemon-reload
   sudo systemctl enable --now bluetooth || true
