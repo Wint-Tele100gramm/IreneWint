@@ -6,6 +6,8 @@
 # сервер сам присылает события {"event":"rooms"|"log"|"phrase"|..., "data":...}.
 
 import asyncio
+
+from websockets.exceptions import ConnectionClosed
 import collections
 import dataclasses
 import hmac
@@ -243,10 +245,14 @@ class WebUI:
                             raise ValueError(f"Неизвестная команда {method}")
                         result = await asyncio.get_running_loop().run_in_executor(None, fn, params)
                     await ws.send(json.dumps({"id": mid, "result": result}, ensure_ascii=False))
+                except ConnectionClosed:
+                    raise
                 except Exception as e:
                     if not isinstance(e, (PermissionError, ValueError, KeyError)):
                         logger.exception(e)
                     await ws.send(json.dumps({"id": mid, "error": str(e)}, ensure_ascii=False))
+        except ConnectionClosed:
+            pass                      # страницу закрыли или перезагрузили — это нормально
         finally:
             self.clients.discard(ws)
 

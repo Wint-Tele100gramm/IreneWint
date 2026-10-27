@@ -167,7 +167,9 @@ def _multiroom():
         for sid, info in sorted(streams.items()):
             if sid not in _players:
                 _players[sid] = Player(sid, info)
-        logger.warning(f"Мультирум Snapcast: линии музыки {', '.join(sorted(streams))}")
+        other = sorted(_snap_streams - set(streams))
+        logger.warning(f"Мультирум Snapcast: линии музыки {', '.join(sorted(streams))}"
+                       + (f", другие источники: {', '.join(other)}" if other else ""))
     _mr = mr
     return mr
 
