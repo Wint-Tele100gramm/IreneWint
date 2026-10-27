@@ -442,6 +442,17 @@ function renderRooms(force) {
       agc.addEventListener("change", async () => { try { await mic("agc", agc.checked); renderRooms(true); } catch (e) { toast(e.message); } });
       card.append(el("label", { class: "row" }, agc, el("span", {}, "Автоусиление"),
         el("span", { class: "lvl grow", style: "text-align:right" }, r.gain != null ? `сейчас ${Number(r.gain).toFixed(1)} дБ` : "")));
+      if ((r.caps || []).includes("aec")) {
+        // эхо- и шумоподавление (прошивка 3.1+ на ESP32-S3)
+        const box = (key, label, title) => {
+          const c = el("input", { type: "checkbox", checked: r[key] !== false, title });
+          c.addEventListener("change", async () => { try { await mic(key, c.checked); renderRooms(true); } catch (e) { toast(e.message); } });
+          return el("label", { class: "row", style: "margin:0", title }, c, el("span", {}, label));
+        };
+        card.append(el("div", { class: "row" },
+          box("aec", "Эхоподавление", "Убирает из микрофона музыку и голос своего динамика — Ирина слышит команды поверх музыки"),
+          box("ns", "Шумоподавление", "Убирает ровный фон: вентилятор, гул")));
+      }
       if (r.agc) card.append(slider("Не больше", r.agc_max ?? 30, 0, 30, " дБ", false, v => mic("agc_max", v), r.id + "am"));
       else card.append(slider("Микрофон", Math.round(r.gain ?? 12), 0, 30, " дБ", false, v => mic("gain", v), r.id + "g"));
       card.append(slider("Порог", r.vad ?? 250, 30, 2000, "", false, v => mic("vad", v), r.id + "t"));

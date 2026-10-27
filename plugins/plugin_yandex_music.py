@@ -3,7 +3,7 @@
 #
 # Мультирум (Snapcast, ставит scripts/rk3528/install.sh): две независимые линии музыки — например, у вас в комнате
 # одна, у жены в своей другая. Музыка включается там, где сказана команда; другие комнаты можно добавить к ней.
-# Комнаты — клиенты ESP32 (прошивка 3.0+) и динамик приставки. Без snapserver (Windows) музыка играет на этом компьютере.
+# Комнаты — клиенты ESP32 (прошивка 3.1+) и динамик приставки. Без snapserver (Windows) музыка играет на этом компьютере.
 #
 # Токен: веб-интерфейс → Настройки → Яндекс Музыка, или  python scripts/rk3528/yandex_token.py
 #
@@ -151,6 +151,12 @@ def _multiroom():
         logger.warning("В snapserver нет потоков pipe:// для музыки — мультирум выключен")
         return None
     mr.split_all()
+    for cid, c in mr.clients().items():         # приглушённые на паузе до перезапуска Ирины
+        if c["muted"]:
+            try:
+                mr.set_volume(cid, muted=False)
+            except Exception as e:
+                logger.debug(e)
     with _players_lock:
         for sid, info in sorted(streams.items()):
             if sid not in _players:
@@ -176,9 +182,10 @@ class Player:
         self.info = info
         if info:
             ch = "mono" if info["channels"] == 1 else "stereo"
+            # маленькие буферы: пауза, «дальше» и «стоп» слышны сразу, а не через несколько секунд
             args = ["--ao=pcm", "--ao-pcm-file=" + info["path"], "--ao-pcm-waveheader=no",
                     "--audio-format=s16", "--audio-samplerate=%d" % info["rate"], "--audio-channels=" + ch,
-                    "--volume=100"]
+                    "--volume=100", "--audio-buffer=0.05"]
         else:
             args = ["--volume=%d" % _options.get("volume", 60)] + list(_options.get("mpv_args", []))
         sock = (r"\\.\pipe\irene-mpv-" if IS_WIN else "/tmp/irene-mpv-") + stream + ("" if IS_WIN else ".sock")
@@ -192,9 +199,30 @@ class Player:
         self.track_started_at = 0.0
         self.active = False      # что-то играет или на паузе
         self.last_error = ""
+        self._fifo_fd = None
+        if info:
+            threading.Thread(target=self._hold_fifo, name=f"fifo-{stream}", daemon=True).start()
 
     def __repr__(self):
         return f"<линия {self.stream}>"
+
+    def _hold_fifo(self):
+        """Держим fifo snapserver открытым и уменьшаем его буфер с 64 КБ (≈0,4–1,5 с звука) до 8 КБ.
+        Пока fifo открыт хоть кем-то, буфер остаётся маленьким и для mpv."""
+        import fcntl
+        path = self.info["path"]
+        for _ in range(60):
+            try:
+                fd = os.open(path, os.O_WRONLY)       # ждёт, пока snapserver откроет fifo на чтение
+                try:
+                    fcntl.fcntl(fd, 1031, 8192)        # F_SETPIPE_SZ
+                except OSError as e:
+                    logger.debug(f"F_SETPIPE_SZ: {e}")
+                self._fifo_fd = fd                     # не закрываем: иначе буфер вернётся к 64 КБ
+                return
+            except OSError as e:
+                logger.debug(f"fifo {path}: {e}")
+                time.sleep(5)
 
     @property
     def current(self):
@@ -249,10 +277,7 @@ class Player:
             return
         self.batch_id = res.batch_id
         if first:
-            try:
-                _api().rotor_station_feedback_radio_started(self.station, "irene", res.batch_id)
-            except Exception as e:
-                logger.debug(e)
+            _bg(_api().rotor_station_feedback_radio_started, self.station, "irene", res.batch_id)
         known = {t.id for t in self.queue}
         for seq in res.sequence:
             if seq.track and seq.track.id not in known:
@@ -301,26 +326,26 @@ class Player:
         if not loaded:
             self.active = False
             return None
+        if _mr is not None:                      # после паузы комнаты были приглушены
+            try:
+                _set_muted(_mr.rooms_of(self.stream), False)
+            except Exception as e:
+                logger.debug(e)
         self.active = True
         self.track_started_at = time.time()
         if self.station:
-            try:
-                _api().rotor_station_feedback_track_started(self.station, track.id, self.batch_id)
-            except Exception as e:
-                logger.debug(e)
+            _bg(_api().rotor_station_feedback_track_started, self.station, track.id, self.batch_id)
         return track
 
     def _finish_feedback(self, skip):
         if not self.station or self.current is None:
             return
         played = max(0.0, time.time() - self.track_started_at)
-        try:
-            if skip:
-                _api().rotor_station_feedback_skip(self.station, self.current.id, played, self.batch_id)
-            else:
-                _api().rotor_station_feedback_track_finished(self.station, self.current.id, played, self.batch_id)
-        except Exception as e:
-            logger.debug(e)
+        # отзывы «Моей волне» — в фоне: музыка не ждёт ответа Яндекса
+        if skip:
+            _bg(_api().rotor_station_feedback_skip, self.station, self.current.id, played, self.batch_id)
+        else:
+            _bg(_api().rotor_station_feedback_track_finished, self.station, self.current.id, played, self.batch_id)
 
     def _on_mpv_event(self, ev):
         if ev.get("event") == "end-file" and ev.get("reason") in ("eof", "error") and self.active:
@@ -341,6 +366,15 @@ class Player:
         if t is None:
             return self.station_name or ""
         return _describe(t)
+
+
+def _bg(fn, *args):
+    def run():
+        try:
+            fn(*args)
+        except Exception as e:
+            logger.debug(f"Яндекс: {e}")
+    threading.Thread(target=run, daemon=True).start()
 
 
 def _describe(track):
@@ -437,6 +471,21 @@ def _cleanup():
                     logger.debug(e)
 
 
+def _set_muted(rooms, muted):
+    """Пауза: клиенты сразу замолкают (иначе доиграли бы буфер ~0,6 с), снятие с паузы — снова звучат."""
+    mr = _multiroom()
+    if mr is None:
+        return
+    clients = mr.clients()
+    for r in rooms:
+        c = clients.get(r)
+        if c and c["muted"] != muted:
+            try:
+                mr.set_volume(r, muted=muted)
+            except Exception as e:
+                logger.debug(e)
+
+
 def _assign(core, rooms, player):
     """Подключить комнаты к линии. Возвращает список комнат без плеера Snapcast."""
     mr = _multiroom()
@@ -448,6 +497,7 @@ def _assign(core, rooms, player):
             missing.append(r)
             continue
         mr.assign(r, player.stream if player else None)
+    _set_muted([r for r in rooms if r not in missing], bool(player and player.active and player.paused()))
     _cleanup()
     return missing
 
@@ -783,16 +833,27 @@ def cmd_playlist(core: VACore, phrase: str):
     _start(core, phrase, go, lambda pl: f"Включаю плейлист {pl.title}" if pl else "Не нашла такой плейлист")
 
 
+def _pause(p, on):
+    mr = _multiroom()
+    rooms = mr.rooms_of(p.stream) if mr is not None else []
+    if on:
+        _set_muted(rooms, True)              # тишина сразу, а не после буфера
+        p.mpv.set("pause", True)
+    else:
+        p.mpv.set("pause", False)
+        _set_muted(rooms, False)
+
+
 def cmd_pause(core: VACore, phrase: str):
     p = _target_player(core)
     if p:
-        p.mpv.set("pause", True)
+        _pause(p, True)
 
 
 def cmd_resume(core: VACore, phrase: str):
     p = _target_player(core)
     if p:
-        p.mpv.set("pause", False)
+        _pause(p, False)
     else:
         cmd_wave(core, "")
 

@@ -205,28 +205,34 @@ inline bool parseServerSettings(const uint8_t* p, uint32_t len, Settings& s) {
 
 class Schedule {
  public:
-  int16_t* ring = nullptr;    // отсчёты моно 16 бит
-  uint32_t cap = 0;           // ёмкость кольца в отсчётах
-  volatile uint32_t wr = 0, rd = 0;
-  struct Mark { int64_t localUs; uint32_t at; };   // отсчёт с позиции at играть в localUs
+  int16_t* ring = nullptr;    // кадры: ch отсчётов 16 бит подряд (L, R)
+  uint32_t cap = 0;           // ёмкость кольца в кадрах
+  uint32_t ch = 1;            // каналов в кадре
+  volatile uint32_t wr = 0, rd = 0;                // позиции в кадрах (растут, кольцо — по модулю cap)
+  struct Mark { int64_t localUs; uint32_t at; };   // кадр с позиции at играть в localUs
   static const int MARKS = 256;
   Mark marks[MARKS];
   volatile uint32_t mWr = 0, mRd = 0;
   volatile uint32_t flushGen = 0;   // производитель просит очистить очередь (новый поток, обрыв связи)
   uint32_t seenGen = 0;
-  uint32_t rate = 22050;
+  uint32_t rate = 22050;            // частота кадров в очереди
 
-  void init(int16_t* mem, uint32_t samples) { ring = mem; cap = samples; wr = 0; rd = 0; mWr = 0; mRd = 0; }
+  void init(int16_t* mem, uint32_t frames, uint32_t channels, uint32_t frameRate) {
+    ring = mem; cap = frames; ch = channels; rate = frameRate; wr = 0; rd = 0; mWr = 0; mRd = 0;
+  }
   // вызывает производитель: всё, что уже в очереди, потребитель выбросит
   void requestFlush() { flushGen = flushGen + 1; }
   uint32_t used() const { return wr - rd; }
   uint32_t space() const { return cap - used(); }
 
-  // производитель: добавить кусок, который надо начать играть в localUs. false — нет места (кусок пропущен)
+  // производитель: добавить n кадров, первый из которых играть в localUs. false — нет места (кусок пропущен)
   bool push(const int16_t* s, uint32_t n, int64_t localUs) {
     if (!ring || n > space() || mWr - mRd >= (uint32_t)MARKS) return false;
     uint32_t w = wr;
-    for (uint32_t i = 0; i < n; i++) ring[(w + i) % cap] = s[i];
+    for (uint32_t i = 0; i < n; i++) {
+      int16_t* d = ring + ((w + i) % cap) * ch;
+      for (uint32_t c = 0; c < ch; c++) d[c] = s[i * ch + c];
+    }
     Mark& m = marks[mWr % MARKS]; m.localUs = localUs; m.at = w;
     SNAP_BARRIER();
     mWr = mWr + 1;
@@ -239,7 +245,7 @@ class Schedule {
     if (seenGen != flushGen) { seenGen = flushGen; SNAP_BARRIER(); mRd = mWr; rd = wr; }
   }
 
-  // потребитель: местное время, когда должен прозвучать отсчёт с позиции rd. false — очередь пуста
+  // потребитель: местное время, когда должен прозвучать кадр с позиции rd. false — очередь пуста
   bool headTime(int64_t& t) {
     checkFlush();
     while (mWr != mRd && rd != wr) {
@@ -255,17 +261,80 @@ class Schedule {
     return false;
   }
 
-  // потребитель: взять до n отсчётов
+  // потребитель: взять до n кадров
   uint32_t pop(int16_t* out, uint32_t n) {
     uint32_t avail = used();
     if (n > avail) n = avail;
     SNAP_BARRIER();
-    for (uint32_t i = 0; i < n; i++) out[i] = ring[(rd + i) % cap];
+    for (uint32_t i = 0; i < n; i++) {
+      const int16_t* src = ring + ((rd + i) % cap) * ch;
+      for (uint32_t c = 0; c < ch; c++) out[i * ch + c] = src[c];
+    }
     SNAP_BARRIER();
     rd = rd + n;
     return n;
   }
   void skip(uint32_t n) { uint32_t a = used(); rd = rd + (n > a ? a : n); }
+};
+
+// Пересчёт частоты и числа каналов (линейная интерполяция) — потоковый: состояние сохраняется между кусками.
+// 44100 стерео -> 22050 моно (ESP32 без PSRAM), 22050 моно (голос Ирины) -> 44100 стерео и т.п.
+class Resampler {
+ public:
+  uint32_t inRate = 0, outRate = 0, inCh = 1, outCh = 1;
+  uint32_t step = 0;          // шаг по входу на один выходной кадр, 16.16
+  uint32_t pos = 0;           // позиция следующего выходного кадра от кадра prev, 16.16 (0 — сам prev)
+  int32_t prev[2] = {0, 0};   // последний кадр предыдущего куска (уже в выходных каналах)
+  bool primed = false;
+
+  void setup(uint32_t inR, uint32_t inC, uint32_t outR, uint32_t outC) {
+    inRate = inR; inCh = inC; outRate = outR; outCh = outC;
+    step = (uint32_t)(((uint64_t)inR << 16) / outR);
+    reset();
+  }
+  void reset() { pos = 0; primed = false; prev[0] = prev[1] = 0; }
+  bool passthrough() const { return inRate == outRate && inCh == outCh; }
+
+  // кадр входа i в выходных каналах
+  inline void frameAt(const int16_t* in, uint32_t i, int32_t* f) const {
+    const int16_t* x = in + i * inCh;
+    if (inCh == outCh) { f[0] = x[0]; if (outCh == 2) f[1] = x[1]; }
+    else if (inCh == 2) f[0] = ((int32_t)x[0] + x[1]) / 2;   // стерео -> моно
+    else { f[0] = x[0]; f[1] = x[0]; }                         // моно -> стерео
+  }
+
+  // Преобразовать n входных кадров. Возвращает число выходных кадров (не больше maxOut).
+  uint32_t process(const int16_t* in, uint32_t n, int16_t* out, uint32_t maxOut) {
+    if (n == 0) return 0;
+    if (passthrough()) {
+      uint32_t m = n < maxOut ? n : maxOut;
+      memcpy(out, in, sizeof(int16_t) * m * inCh);
+      return m;
+    }
+    uint32_t produced = 0;
+    if (!primed) {
+      // первый кадр — опорный; при прореживании вдвое берём среднее соседних кадров (простой фильтр от «звона»)
+      frameAt(in, 0, prev);
+      primed = true;
+      pos = (1u << 16) + (step == 0x20000 ? 0x8000 : 0);
+    }
+    // кадр с индексом k: k = 0 — prev, k >= 1 — in[k - 1]
+    while (produced < maxOut) {
+      uint32_t k = pos >> 16, frac = pos & 0xFFFF;
+      if (k + 1 > n) break;                      // нужен кадр k+1 (in[k]) — его ещё нет
+      int32_t a[2], b[2];
+      if (k == 0) { a[0] = prev[0]; a[1] = prev[1]; } else frameAt(in, k - 1, a);
+      frameAt(in, k, b);
+      for (uint32_t c = 0; c < outCh; c++)
+        out[produced * outCh + c] = (int16_t)(a[c] + (((b[c] - a[c]) * (int32_t)(frac >> 1)) >> 15));
+      produced++;
+      pos += step;
+    }
+    frameAt(in, n - 1, prev);
+    uint32_t used = n << 16;                     // следующий кусок: prev — это in[n-1]
+    pos = pos > used ? pos - used : 0;
+    return produced;
+  }
 };
 
 // Статистика синхронизации (для журнала)
@@ -274,14 +343,16 @@ struct SyncStats {
   int64_t lastErrUs = 0;
 };
 
-// Заполнить блок музыки, который зазвучит в outAtUs (местное время первого отсчёта блока).
-// Мягкая синхронизация: расхождение до SYNC_HARD_US выправляется выбрасыванием/повтором одного отсчёта на блок
+// Заполнить блок музыки из n кадров, который зазвучит в outAtUs (местное время первого кадра блока).
+// Мягкая синхронизация: расхождение до SYNC_HARD_US выправляется выбрасыванием/повтором одного кадра на блок
 // (незаметно на слух), больше — пропуском или тишиной (так бывает при старте и после сбоев Wi-Fi).
-// Возвращает число отсчётов с музыкой (0 — блок тишины).
+// Возвращает число кадров с музыкой (0 — блок тишины).
 static const int64_t SYNC_TOL_US = 400;       // точнее не нужно: соседние комнаты, а не стереопара
 static const int64_t SYNC_HARD_US = 3000;     // дальше — сразу перескок
+static const int FILL_MAX = 1024;             // кадров в блоке не больше
 inline int fillBlock(Schedule& q, int16_t* out, int n, int64_t outAtUs, SyncStats& st) {
-  memset(out, 0, sizeof(int16_t) * n);
+  const int ch = (int)q.ch;
+  memset(out, 0, sizeof(int16_t) * n * ch);
   int64_t head;
   if (!q.headTime(head)) return 0;
   st.blocks++;
@@ -300,31 +371,32 @@ inline int fillBlock(Schedule& q, int16_t* out, int n, int64_t outAtUs, SyncStat
   if (err > SYNC_HARD_US) {
     lead = (int)(err * (int64_t)q.rate / 1000000);   // музыка начинается посреди блока — до неё тишина
   } else if (err > SYNC_TOL_US) {
-    adj = -1;                            // чуть рано: растягиваем на отсчёт
+    adj = -1;                            // чуть рано: растягиваем на кадр
   } else if (err < -SYNC_TOL_US) {
-    adj = 1;                             // чуть поздно: выбрасываем отсчёт
+    adj = 1;                             // чуть поздно: выбрасываем кадр
   }
   if (lead >= n) return 0;
   int need = n - lead;
   int take = need + adj;
-  static int16_t tmp[2048 + 1];
-  if (take > 2048) take = 2048;
+  static int16_t tmp[(FILL_MAX + 1) * 2];
+  if (take > FILL_MAX) take = FILL_MAX;
   int got = (int)q.pop(tmp, take);
   if (adj != 0) st.adjusts++;
-  if (adj == 1 && got == take) {         // убрать отсчёт посередине
+  int16_t* dst = out + lead * ch;
+  if (adj == 1 && got == take) {         // убрать кадр посередине
     int mid = take / 2;
-    memcpy(out + lead, tmp, sizeof(int16_t) * mid);
-    memcpy(out + lead + mid, tmp + mid + 1, sizeof(int16_t) * (take - mid - 1));
+    memcpy(dst, tmp, sizeof(int16_t) * mid * ch);
+    memcpy(dst + mid * ch, tmp + (mid + 1) * ch, sizeof(int16_t) * (take - mid - 1) * ch);
     return need;
   }
-  if (adj == -1 && got == take) {        // повторить отсчёт посередине
+  if (adj == -1 && got == take) {        // повторить кадр посередине
     int mid = take / 2;
-    memcpy(out + lead, tmp, sizeof(int16_t) * (mid + 1));
-    memcpy(out + lead + mid + 1, tmp + mid, sizeof(int16_t) * (take - mid));
+    memcpy(dst, tmp, sizeof(int16_t) * (mid + 1) * ch);
+    memcpy(dst + (mid + 1) * ch, tmp + mid * ch, sizeof(int16_t) * (take - mid) * ch);
     return need;
   }
   if (got > need) got = need;
-  memcpy(out + lead, tmp, sizeof(int16_t) * got);
+  memcpy(dst, tmp, sizeof(int16_t) * got * ch);
   return got;
 }
 

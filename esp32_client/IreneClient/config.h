@@ -3,7 +3,7 @@
 // Усиление, порог и паузу потом удобнее менять в веб-интерфейсе сервера (вкладка «Комнаты»).
 #pragma once
 
-#define FW_VERSION "3.0"
+#define FW_VERSION "3.1"
 
 // ---------------- распиновка ----------------
 #if defined(CONFIG_IDF_TARGET_ESP32S3)
@@ -13,13 +13,16 @@
   #define MIC_SCK   4    // INMP441 SCK          (адаптер: SVP)
   #define MIC_WS    5    // INMP441 WS           (адаптер: SVN)
   #define MIC_SD    6    // INMP441 SD           (адаптер: IO34)
-  #define AMP_DIN   7    // MAX98357A DIN        (адаптер: IO35)
-  #define AMP_BCLK  15   // MAX98357A BCLK       (адаптер: IO32)
-  #define AMP_LRC   16   // MAX98357A LRC        (адаптер: IO33)
-  #define AMP_SD    -1   // MAX98357A SD: -1 — не подключён (можно GPIO17 = «IO25» на адаптере)
+  #define AMP_DIN   7    // DIN / SD (данные)    (адаптер: IO35) — MAX98357A DIN, PCM5102 DIN («SD»)
+  #define AMP_BCLK  15   // BCLK / BCK           (адаптер: IO32)
+  #define AMP_LRC   16   // LRC / LCK / LR       (адаптер: IO33)
+  #define AMP_SD    -1   // выключение усилителя в тишине (MAX98357A SD, PAM8403 SHDN): -1 — нет, или 17 («IO25»)
   #define LED_PIN   -1   // светодиод «слушаю»: -1 — нет (светодиод адаптера «LED-IO4» сидит на GPIO35/PSRAM — не трогать)
   #define AUDIO_BUF_BYTES (64 * 1024)   // буфер ответа (в PSRAM, если она есть)
-  #define SNAP_RING_MS    3000          // очередь музыки, мс (в PSRAM): больше буфера snapserver (1000 мс) с запасом
+  #define SNAP_RING_MS    2000          // очередь музыки, мс (в PSRAM): больше буфера snapserver (600 мс) с запасом
+  #define AMP_RATE        44100         // частота вывода
+  #define AMP_STEREO      1             // 1 — стерео (PCM5102 и т.п.), 0 — один динамик: L+R в оба канала
+  #define MIC_AEC         1             // эхо- и шумоподавление ESP-SR (только S3)
 #else
   // ESP32 DevKit (WROOM-32)
   #define MIC_SCK   32
@@ -31,7 +34,10 @@
   #define AMP_SD    -1
   #define LED_PIN   2    // встроенный светодиод
   #define AUDIO_BUF_BYTES (24 * 1024)
-  #define SNAP_RING_MS    1400          // без PSRAM память дорогая: чуть больше буфера snapserver
+  #define SNAP_RING_MS    1200          // без PSRAM память дорогая: чуть больше буфера snapserver
+  #define AMP_RATE        22050         // без PSRAM — моно 22050 Гц (стерео 44100 сводится в моно)
+  #define AMP_STEREO      0
+  #define MIC_AEC         0             // ESP-SR на обычном ESP32 нет
 #endif
 
 #define RESET_BUTTON 0     // кнопка BOOT/PROG: удерживать 5 секунд — сброс настроек Wi-Fi и комнаты
@@ -71,7 +77,14 @@
 #define SNAP_ENABLED     1       // 0 — клиент без музыки, как прошивка 2.x
 #define SNAP_PORT        1704
 #define MUSIC_DUCK_PCT   20      // громкость музыки, пока Ирина слушает команду и отвечает, % от обычной
-#define MUSIC_VAD_RATIO  4.0f    // пока играет музыка, речь должна быть во столько раз громче фона (музыки в микрофоне)
+#define MUSIC_VAD_RATIO  4.0f    // пока играет музыка без эхоподавления, речь должна быть во столько раз громче фона
+
+// ---------------- эхо- и шумоподавление (ESP32-S3) ----------------
+// Включаются и выключаются в веб-интерфейсе (вкладка «Комнаты»); здесь — значения по умолчанию.
+#define DEFAULT_AEC      1       // эхоподавление: вычитать из микрофона музыку и голос своего динамика
+#define DEFAULT_NS       1       // шумоподавление: убирать ровный фон
+#define NS_MODE          1       // сила шумоподавления: 0 — мягко, 1 — средне, 2 — сильно (может портить речь)
+#define MIC_REF_DELAY_US 0       // сдвиг опорного сигнала, мкс (динамик далеко от микрофона — например 3000)
 
 // ---------------- Wi-Fi ----------------
 // Если клиент перезагружается или теряет сеть, когда говорит (просадка питания) —

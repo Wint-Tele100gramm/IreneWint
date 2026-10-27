@@ -377,8 +377,9 @@ class WebUI:
         for key, (lo, hi) in limits.items():
             if key in params:
                 cfg[key] = max(lo, min(hi, int(params[key])))
-        if "agc" in params:
-            cfg["agc"] = bool(params["agc"])
+        for key in ("agc", "aec", "ns"):
+            if key in params:
+                cfg[key] = bool(params[key])
         if not cfg:
             raise ValueError("Нечего менять")
         room.send_json({"type": "config", **cfg})

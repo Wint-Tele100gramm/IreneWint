@@ -2,7 +2,7 @@
 #
 # snapserver (ставит scripts/rk3528/install.sh) держит несколько потоков: stream1, stream2 — музыка
 # (плеер пишет PCM в их fifo) и idle — пустой поток для комнат, где музыка не играет.
-# Каждая комната — клиент Snapcast с ID = id комнаты: ESP32 (прошивка 3.0+) или snapclient приставки (ID "local").
+# Каждая комната — клиент Snapcast с ID = id комнаты: ESP32 (прошивка 3.1+) или snapclient приставки (ID "local").
 # Управление — JSON-RPC по TCP (порт 1705): Server.GetStatus, Group.SetStream, Group.SetClients, Client.SetVolume.
 #
 # Каждый клиент держим в своей группе: тогда поток назначается комнате, а не группе.

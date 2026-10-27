@@ -12,7 +12,8 @@
 #                             {"type":"vad","state":"start"} / {"type":"vad","state":"end","level":1234}
 #                             {"type":"text","text":"ирина привет"}         (отладка: команда текстом)
 #                             {"type":"meter","level":..,"noise":..,"gain":..}  {"type":"state","gain":..,"vad":..,...}
-#                             (прошивка 2.0+: в hello есть "caps":["config","meter","agc"] и настройки микрофона)
+#                             (прошивка 2.0+: в hello есть "caps":["config","meter","agc"] и настройки микрофона;
+#                              3.1+ на S3: "aec" — эхо- и шумоподавление, в config/state ключи "aec","ns")
 #   клиент -> сервер, binary: PCM s16le mono 16 кГц (только пока клиент слышит речь)
 #   сервер -> клиент, текст:  {"type":"welcome","volume":70} {"type":"wake"} {"type":"idle"}
 #                             {"type":"tts_start","rate":22050} ... {"type":"tts_end"}
@@ -70,7 +71,7 @@ DEFAULT_OPTIONS = {
     "local_mic_gain_db": 0,      # усиление микрофона приставки/ноутбука, дБ (тихие встроенные микрофоны: 10–20)
 }
 OPTIONS_FILE = os.path.splitext(os.path.abspath(__file__))[0] + ".json"
-MIC_KEYS = ("gain", "vad", "hang", "agc", "agc_max")   # настройки микрофона клиента (прошивка 2.0+)
+MIC_KEYS = ("gain", "vad", "hang", "agc", "agc_max", "aec", "ns")   # настройки микрофона клиента (2.0+; aec/ns — 3.1+ на S3)
 SNAP_RATE = 22050            # частота потоков Snapcast (scripts/rk3528/snapserver.conf) — на ней играют клиенты 3.0+
 
 

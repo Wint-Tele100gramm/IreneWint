@@ -6,6 +6,7 @@
 //  - 2.0: настройки микрофона с сервера (веб-интерфейс), живой индикатор уровня, автоусиление по речи
 //  - 3.0: музыка по комнатам — клиент Snapcast (snap_proto.h): синхронно с другими комнатами, голос Ирины
 //         поверх музыки, музыка притихает, пока Ирина слушает команду и отвечает
+//  - 3.1: стерео 44100 Гц (S3), эхо- и шумоподавление микрофона на S3 (mic_aec.h, ESP-SR)
 //
 // Протокол описан в начале runva_rooms.py.
 //
@@ -35,6 +36,7 @@
 #include "esp_heap_caps.h"
 #include "config.h"
 #include "snap_proto.h"
+#include "mic_aec.h"
 
 // в ESP-IDF 5 (ядро Arduino 3.x) поля DMA переименованы, старые имена оставлены как устаревшие
 #if ESP_IDF_VERSION_MAJOR >= 5
@@ -52,8 +54,8 @@ static const int SAMPLE_RATE = 16000;
 static const int FRAME = 320;                       // 20 мс при 16 кГц
 static const int FRAMES_PER_PACKET = 4;             // отправляем пакетами по 80 мс
 static const int PREROLL_FRAMES = VAD_PREROLL_MS / 20;
-static const int AMP_RATE = 22050;                  // частота усилителя: музыка Snapcast и ответы Ирины
-static const int BLOCK = 256;                       // блок воспроизведения = один буфер DMA (11,6 мс)
+static const int AMP_CH = AMP_STEREO ? 2 : 1;       // каналов в очереди музыки (на выход всегда L и R)
+static const int BLOCK = AMP_RATE >= 44100 ? 512 : 256;   // блок воспроизведения = один буфер DMA (11,6 мс)
 static const int AMP_DMA_BUFS = 4;                  // буферов DMA: задержка ~46 мс, её учитывает синхронизация
 
 // ---------------- настройки ----------------
@@ -68,6 +70,8 @@ struct Settings {
   int hangMs = DEFAULT_VAD_HANG_MS;
   bool agc = DEFAULT_AGC;
   int agcMaxDb = DEFAULT_AGC_MAX_DB;
+  bool aec = DEFAULT_AEC;
+  bool ns = DEFAULT_NS;
 } cfg;
 float micGain = 4.0f;                    // линейное усиление из cfg.micGainDb
 bool gainDirty = false;                  // автоусиление поменяло усиление — сохранить позже
@@ -97,7 +101,7 @@ snap::Schedule snapSched;
 snap::SyncStats syncStats;
 volatile bool snapConnected = false;
 volatile bool snapFormatOk = false;
-volatile int snapChannels = 1;
+snap::Resampler snapRes;                 // поток snapserver -> частота и каналы усилителя
 volatile int snapVolume = 100;           // громкость музыки в этой комнате (Ирина меняет через snapserver)
 volatile bool snapMuted = false;
 volatile int snapBufferMs = 1000, snapLatencyMs = 0;
@@ -168,6 +172,8 @@ void loadSettings() {
   cfg.hangMs = prefs.getInt("hang", DEFAULT_VAD_HANG_MS);
   cfg.agc = prefs.getBool("agc", DEFAULT_AGC);
   cfg.agcMaxDb = prefs.getInt("agcmax", DEFAULT_AGC_MAX_DB);
+  cfg.aec = prefs.getBool("aec", DEFAULT_AEC);
+  cfg.ns = prefs.getBool("ns", DEFAULT_NS);
   prefs.end();
   setGain(cfg.micGainDb);
 }
@@ -184,6 +190,8 @@ void saveSettings() {
   prefs.putInt("hang", cfg.hangMs);
   prefs.putBool("agc", cfg.agc);
   prefs.putInt("agcmax", cfg.agcMaxDb);
+  prefs.putBool("aec", cfg.aec);
+  prefs.putBool("ns", cfg.ns);
   prefs.end();
   gainDirty = false;
   gainSavedAt = millis();
@@ -418,12 +426,15 @@ void setupAmp() {
 
 // ---------------- воспроизведение (отдельная задача) ----------------
 // Каждые 11,6 мс — блок: ответ Ирины (из audioBuf) + музыка (из snapSched по расписанию) -> усилитель.
-// Блок, записанный сейчас, зазвучит через AMP_DMA_BUFS буферов DMA — по этому времени выбирается музыка.
+// Блок, записанный сейчас, зазвучит через AMP_DMA_BUFS буферов DMA — по этому времени выбирается музыка
+// и по нему же эхоподавление сопоставляет микрофон с тем, что играет динамик.
 void playerTask(void*) {
-  static int16_t tts[BLOCK], mus[BLOCK], out[BLOCK * 2];
+  static int16_t tts[BLOCK], mus[BLOCK * 2], out[BLOCK * 2];
+  static int16_t ttsFifo[BLOCK * 2], ttsIn[512];
+  static snap::Resampler ttsRes;  // голос Ирины (16–22 кГц моно) -> частота усилителя
+  int ttsHave = 0;
   bool ttsReady = false;          // ответ накопил запас и играет
   bool active = false;            // усилитель включён, блоки идут
-  int curRate = AMP_RATE;
   uint32_t quietSince = 0, statsAt = 0;
   int64_t lastWriteUs = 0;
   float musGain = 0;              // текущее усиление музыки (плавно идёт к цели: без щелчков)
@@ -447,37 +458,54 @@ void playerTask(void*) {
       lastWriteUs = esp_timer_get_time();
       ampEnable(true);
     }
-    // частота: ответ старого сервера может быть не 22050 — тогда музыка ждёт конца ответа
-    int wantRate = playing ? pendingRate : AMP_RATE;
-    if (wantRate != curRate) {
-      curRate = wantRate;
-      i2s_set_sample_rates(AMP_PORT, curRate);
-    }
 
-    // ответ Ирины
+    // ответ Ирины: пересчитываем в частоту усилителя
     memset(tts, 0, sizeof(tts));
     int nt = 0;
     if (playing) {
       size_t avail = xStreamBufferBytesAvailable(audioBuf);
-      if (!ttsReady && (avail >= (size_t)pendingRate * 2 * 150 / 1000 || ttsEnded)) ttsReady = true;   // запас 150 мс
-      if (ttsReady && (avail >= sizeof(tts) || ttsEnded)) {
-        nt = xStreamBufferReceive(audioBuf, tts, sizeof(tts), 0) / 2;
-        if (nt == 0 && ttsEnded && xStreamBufferIsEmpty(audioBuf)) {
+      if (!ttsReady && (avail >= (size_t)pendingRate * 2 * 150 / 1000 || ttsEnded)) {   // запас 150 мс
+        ttsReady = true;
+        ttsRes.setup(pendingRate, 1, AMP_RATE, 1);
+        ttsHave = 0;
+      }
+      if (ttsReady) {
+        while (ttsHave < BLOCK) {
+          size_t bytes = xStreamBufferBytesAvailable(audioBuf);
+          if (bytes < 2) break;
+          int space = BLOCK * 2 - ttsHave;
+          int want = (int)((int64_t)(space - 2) * pendingRate / AMP_RATE);
+          if (want < 1) break;
+          if (want > (int)(sizeof(ttsIn) / 2)) want = sizeof(ttsIn) / 2;
+          if ((size_t)want * 2 > bytes) want = bytes / 2;
+          int got = xStreamBufferReceive(audioBuf, ttsIn, want * 2, 0) / 2;
+          if (got <= 0) break;
+          ttsHave += ttsRes.process(ttsIn, got, ttsFifo + ttsHave, space);
+        }
+        if (ttsHave >= BLOCK || (ttsEnded && ttsHave > 0)) {
+          nt = ttsHave < BLOCK ? ttsHave : BLOCK;
+          memcpy(tts, ttsFifo, nt * 2);
+          memmove(ttsFifo, ttsFifo + nt, (ttsHave - nt) * 2);
+          ttsHave -= nt;
+        } else if (ttsEnded && ttsHave == 0 && xStreamBufferIsEmpty(audioBuf)) {
           playEndMs = millis();
           playing = false;
           ttsReady = false;
           led(false);
+        } else if (!music) {
+          vTaskDelay(pdMS_TO_TICKS(2));    // ждём звук ответа; без музыки блоки писать незачем
+          continue;
         }
       } else if (!music) {
-        vTaskDelay(pdMS_TO_TICKS(2));    // ждём звук ответа; без музыки блоки писать незачем
+        vTaskDelay(pdMS_TO_TICKS(2));
         continue;
       }
     }
 
     // музыка
     int nm = 0;
-    if (curRate == AMP_RATE && snapFormatOk && snapTime.ready()) {
-      int64_t outAt = lastWriteUs + (int64_t)AMP_DMA_BUFS * BLOCK * 1000000 / AMP_RATE;
+    int64_t outAt = lastWriteUs + (int64_t)AMP_DMA_BUFS * BLOCK * 1000000 / AMP_RATE;
+    if (snapFormatOk && snapTime.ready()) {
       nm = snap::fillBlock(snapSched, mus, BLOCK, outAt, syncStats);
     } else {
       memset(mus, 0, sizeof(mus));
@@ -498,11 +526,20 @@ void playerTask(void*) {
     musGain = g1;
     for (int i = 0; i < BLOCK; i++) {
       float g = g0 + (g1 - g0) * i / BLOCK;
-      int32_t v = (int32_t)tts[i] * kt / 10000 + (int32_t)(mus[i] * g);
-      if (v > 32767) v = 32767;
-      if (v < -32768) v = -32768;
-      out[2 * i] = out[2 * i + 1] = (int16_t)v;
+      int32_t t = (int32_t)tts[i] * kt / 10000;
+      int32_t l, r;
+      if (AMP_CH == 2) {
+        l = t + (int32_t)(mus[2 * i] * g);
+        r = t + (int32_t)(mus[2 * i + 1] * g);
+      } else {
+        l = r = t + (int32_t)(mus[i] * g);
+      }
+      out[2 * i] = (int16_t)constrain(l, -32768, 32767);
+      out[2 * i + 1] = (int16_t)constrain(r, -32768, 32767);
     }
+#if MIC_AEC
+    micproc::refWrite(out, BLOCK, AMP_RATE, outAt);   // опорный сигнал для эхоподавления
+#endif
     size_t written;
     i2s_write(AMP_PORT, out, sizeof(out), &written, portMAX_DELAY);
     lastWriteUs = esp_timer_get_time();           // очередь DMA снова полна: следующий блок — через AMP_DMA_BUFS
@@ -511,9 +548,9 @@ void playerTask(void*) {
 
     if (nm > 0 && millis() - statsAt > 60000) {
       statsAt = millis();
-      Serial.printf("Музыка: расхождение %.1f мс, поправок %u, пропущено %u отсчётов, громкость %d%s\n",
-                    syncStats.lastErrUs / 1000.0f, (unsigned)syncStats.adjusts, (unsigned)syncStats.skipped, (int)snapVolume,
-                    snapMuted ? " (выкл)" : "");
+      Serial.printf("Музыка: расхождение %.1f мс, поправок %u, пропущено %u кадров, громкость %d%s\n",
+                    syncStats.lastErrUs / 1000.0f, (unsigned)syncStats.adjusts, (unsigned)syncStats.skipped,
+                    (int)snapVolume, snapMuted ? " (выкл)" : "");
     }
   }
 }
@@ -539,11 +576,16 @@ void onSnapMessage(const snap::Header& h, const uint8_t* p, uint32_t len) {
       snap::Format f;
       bool ok = snap::parseCodecHeader(p, len, codec, sizeof(codec), f);
       snapSched.requestFlush();                   // новый поток (Ирина переключила линию)
-      snapFormatOk = ok && f.rate == (uint32_t)AMP_RATE && f.channels <= 2;
-      snapChannels = f.channels;
-      if (snapFormatOk) Serial.printf("Музыка: поток %s %u Гц, каналов %u\n", codec, f.rate, f.channels);
-      else Serial.printf("Музыка: формат %s %u Гц %u бит не поддерживается — нужен pcm %d:16:1 (snapserver.conf)\n",
-                         codec, f.rate, f.bits, AMP_RATE);
+      snapFormatOk = false;
+      if (ok && f.channels <= 2 && f.rate >= 8000 && f.rate <= 48000) {
+        snapRes.setup(f.rate, f.channels, AMP_RATE, AMP_CH);
+        snapFormatOk = true;
+        Serial.printf("Музыка: поток %s %u Гц, каналов %u -> %d Гц, %s\n", codec, (unsigned)f.rate, (unsigned)f.channels, AMP_RATE,
+                      AMP_CH == 2 ? "стерео" : "моно");
+      } else {
+        Serial.printf("Музыка: формат %s %u Гц %u бит не поддерживается — нужен pcm 44100:16:2 (snapserver.conf)\n",
+                      codec, (unsigned)f.rate, (unsigned)f.bits);
+      }
       break;
     }
     case snap::kTime: {
@@ -558,17 +600,11 @@ void onSnapMessage(const snap::Header& h, const uint8_t* p, uint32_t len) {
       const uint8_t* d;
       uint32_t dl;
       if (!snap::parseWireChunk(p, len, ts, d, dl)) break;
-      static int16_t mono[2048];
-      uint32_t n = dl / 2 / snapChannels;
-      if (n > 2048) n = 2048;
-      const int16_t* src = (const int16_t*)d;
-      if (snapChannels == 2) {
-        for (uint32_t i = 0; i < n; i++) mono[i] = (int16_t)(((int32_t)src[2 * i] + src[2 * i + 1]) / 2);
-        src = mono;
-      }
+      static int16_t conv[2400 * 2];             // 20 мс 48 кГц -> 44,1 кГц стерео с запасом
+      uint32_t n = snapRes.process((const int16_t*)d, dl / 2 / snapRes.inCh, conv, 2400);
       int64_t playAt = snapTime.serverToLocal(ts) + (int64_t)(snapBufferMs - snapLatencyMs) * 1000;
       static uint32_t fullLogged = 0;
-      if (!snapSched.push(src, n, playAt) && millis() - fullLogged > 10000) {
+      if (!snapSched.push(conv, n, playAt) && millis() - fullLogged > 10000) {
         fullLogged = millis();
         Serial.println("Музыка: очередь полна — кусок пропущен");
       }
@@ -656,9 +692,9 @@ void snapTask(void*) {
 
 bool setupSnap() {
   // очередь музыки и сборщик сообщений — в PSRAM, если есть
-  uint32_t samples = (uint32_t)AMP_RATE * SNAP_RING_MS / 1000;
+  uint32_t frames = (uint32_t)AMP_RATE * SNAP_RING_MS / 1000;
   uint32_t caps = psramFound() ? MALLOC_CAP_SPIRAM : MALLOC_CAP_8BIT;
-  int16_t* ring = (int16_t*)heap_caps_malloc(samples * 2, caps);
+  int16_t* ring = (int16_t*)heap_caps_malloc(frames * 2 * AMP_CH, caps);
   void* pm = heap_caps_malloc(sizeof(snap::Parser), caps);
   if (!ring || !pm) {
     Serial.println("!! Не хватило памяти под музыку — клиент работает без неё");
@@ -667,8 +703,7 @@ bool setupSnap() {
     return false;
   }
   snapParser = new (pm) snap::Parser();
-  snapSched.init(ring, samples);
-  snapSched.rate = AMP_RATE;
+  snapSched.init(ring, frames, AMP_CH, AMP_RATE);
   xTaskCreatePinnedToCore(snapTask, "snap", 6144, NULL, 3, NULL, 0);
   return true;
 }
@@ -680,6 +715,12 @@ void fillMicState(JsonDocument& doc) {
   doc["hang"] = cfg.hangMs;
   doc["agc"] = cfg.agc;
   doc["agc_max"] = cfg.agcMaxDb;
+#if MIC_AEC
+  if (micproc::ready) {
+    doc["aec"] = cfg.aec;
+    doc["ns"] = cfg.ns;
+  }
+#endif
 }
 
 void sendHello() {
@@ -702,6 +743,9 @@ void sendHello() {
   caps.add("meter");
   caps.add("agc");
   if (snapParser) caps.add("snap");        // музыка через Snapcast: сервер шлёт голос на 22050 Гц
+#if MIC_AEC
+  if (micproc::ready) caps.add("aec");     // эхо- и шумоподавление: переключатели в веб-интерфейсе
+#endif
   fillMicState(doc);
   String s;
   serializeJson(doc, s);
@@ -725,8 +769,12 @@ void applyServerConfig(JsonDocument& doc) {
   if (doc["hang"].is<int>()) cfg.hangMs = constrain(doc["hang"].as<int>(), 300, 3000);
   if (doc["agc"].is<bool>()) cfg.agc = doc["agc"].as<bool>();
   if (doc["agc_max"].is<int>()) cfg.agcMaxDb = constrain(doc["agc_max"].as<int>(), 0, 30);
+  if (doc["aec"].is<bool>()) cfg.aec = doc["aec"].as<bool>();
+  if (doc["ns"].is<bool>()) cfg.ns = doc["ns"].as<bool>();
   if (cfg.agc && cfg.micGainDb > cfg.agcMaxDb) setGain(cfg.agcMaxDb);
   saveSettings();
+  Serial.printf("Настройки с сервера: эхоподавление %s, шумоподавление %s\n", cfg.aec ? "вкл" : "выкл",
+                cfg.ns ? "вкл" : "выкл");
   Serial.printf("Настройки с сервера: усиление %.1f дБ%s, порог %d, пауза %d мс\n", cfg.micGainDb,
                 cfg.agc ? " (авто)" : "", cfg.vadLevel, cfg.hangMs);
   sendMicState();
@@ -742,7 +790,7 @@ void sendMeter(float level) {
 void sendVad(bool start, uint32_t level) {
   char buf[64];
   if (start) snprintf(buf, sizeof(buf), "{\"type\":\"vad\",\"state\":\"start\"}");
-  else snprintf(buf, sizeof(buf), "{\"type\":\"vad\",\"state\":\"end\",\"level\":%u}", level);
+  else snprintf(buf, sizeof(buf), "{\"type\":\"vad\",\"state\":\"end\",\"level\":%u}", (unsigned)level);
   ws.sendTXT(buf);
 }
 
@@ -873,7 +921,7 @@ void agcUpdate(uint32_t level) {
   setGain(target);
   noiseFloor *= powf(10.0f, (target - before) / 20.0f);       // шум в новом масштабе
   gainDirty = true;
-  Serial.printf("Автоусиление: %.1f -> %.1f дБ (уровень фразы %u, цель %d)\n", before, target, level, AGC_TARGET);
+  Serial.printf("Автоусиление: %.1f -> %.1f дБ (уровень фразы %u, цель %d)\n", before, target, (unsigned)level, AGC_TARGET);
 }
 
 void endSpeech() {
@@ -884,8 +932,8 @@ void endSpeech() {
   if (wsConnected) sendVad(false, level);
   // для настройки чувствительности: хорошая речь — уровень 1500–5000, шум — в разы меньше порога
   Serial.printf("Фраза %.1f с: уровень речи %u, шум %.0f, порог %d, усиление %.1f дБ%s, убрано щелчков %u\n",
-                speechMs / 1000.0f, level, noiseFloor, cfg.vadLevel, cfg.micGainDb, cfg.agc ? " (авто)" : "",
-                glitchCount);
+                speechMs / 1000.0f, (unsigned)level, noiseFloor, cfg.vadLevel, cfg.micGainDb, cfg.agc ? " (авто)" : "",
+                (unsigned)glitchCount);
   glitchCount = 0;
   if (!speechWithMusic) agcUpdate(level);   // поверх музыки уровень фразы ничего не говорит о голосе
   speechWithMusic = false;
@@ -975,6 +1023,9 @@ void processMic() {
   size_t bytesRead = 0;
   if (i2s_read(MIC_PORT, micRaw, sizeof(micRaw), &bytesRead, pdMS_TO_TICKS(100)) != ESP_OK) return;
   if (bytesRead < sizeof(micRaw)) return;
+#if MIC_AEC
+  micproc::noteFrame(FRAME, esp_timer_get_time());   // время кадра — для сопоставления с динамиком
+#endif
   trackMicSlot();
 
   // 24-битные отсчёты живого слота + убираем одиночные сбои шины I2S (щелчки)
@@ -996,6 +1047,14 @@ void processMic() {
     frame16[i] = (int16_t)s;
     sq += (int64_t)s * s;
   }
+#if MIC_AEC
+  // эхоподавление (музыка и голос своего динамика) и шумоподавление; уровень — уже по очищенному звуку
+  if (cfg.aec || cfg.ns) {
+    micproc::process(frame16, FRAME, cfg.aec, cfg.ns);
+    sq = 0;
+    for (int i = 0; i < FRAME; i++) sq += (int64_t)frame16[i] * frame16[i];
+  }
+#endif
   float rms = sqrtf((float)sq / FRAME);
 
   bool muted = playing || millis() - playEndMs < MIC_MUTE_AFTER_TTS_MS;
@@ -1015,7 +1074,7 @@ void processMic() {
     if (millis() - lastNoiseLog > 30000) {
       lastNoiseLog = millis();
       Serial.printf("Тишина: шум %.0f, речь начнётся с уровня %.0f; Wi-Fi %d дБм, обрывов %u\n", noiseFloor,
-                    max(noiseFloor * VAD_START_RATIO, (float)cfg.vadLevel), WiFi.RSSI(), wifiDrops);
+                    max(noiseFloor * VAD_START_RATIO, (float)cfg.vadLevel), WiFi.RSSI(), (unsigned)wifiDrops);
     }
     // фоновый шум медленно подстраивается; пока играет музыка, она и есть фон — следуем за ней в обе стороны
     bool musicNow = millis() - musicHeardAt < 600;
@@ -1027,7 +1086,9 @@ void processMic() {
     prerollHead = (prerollHead + 1) % PREROLL_FRAMES;
     if (prerollCount < PREROLL_FRAMES) prerollCount++;
 
-    float threshold = max(noiseFloor * (musicNow ? MUSIC_VAD_RATIO : VAD_START_RATIO), (float)cfg.vadLevel);
+    // с эхоподавлением музыка в микрофоне почти не слышна — порог обычный
+    bool echoLeft = musicNow && !(MIC_AEC && cfg.aec);
+    float threshold = max(noiseFloor * (echoLeft ? MUSIC_VAD_RATIO : VAD_START_RATIO), (float)cfg.vadLevel);
     loudFrames = (rms > threshold) ? loudFrames + 1 : 0;
     if (loudFrames >= VAD_START_FRAMES) {
       inSpeech = true;
@@ -1102,6 +1163,13 @@ void setup() {
   if (!audioBuf) Serial.println("!! Не хватило памяти под буфер звука");
   setupMic();
   setupAmp();
+#if MIC_AEC
+  if (psramFound() && micproc::init(NS_MODE))
+    Serial.printf("Эхо- и шумоподавление готово (кусок %d отсчётов): %s / %s\n", micproc::chunk,
+                  cfg.aec ? "вкл" : "выкл", cfg.ns ? "вкл" : "выкл");
+  else
+    Serial.println("!! Эхоподавление не запустилось (нужна PSRAM) — микрофон без него");
+#endif
   xTaskCreatePinnedToCore(playerTask, "player", 4096, NULL, 5, NULL, 1);
 
   setupWebSocket();
