@@ -8,13 +8,23 @@
 #     bash scripts/rk3528/install.sh --lite     # приставка с 1 ГБ ОЗУ: без DLNA и Bluetooth, zram, жёсткий лимит памяти
 #                                               (включается сам, если ОЗУ меньше 1,5 ГБ; --full — отключить)
 #
-# Переменные: PYTHON=/usr/local/bin/python3.13 (по умолчанию python3.13 из PATH)
+# Переменные: PYTHON=/usr/local/bin/python3.13 (по умолчанию: Python уже созданного окружения .venv,
+#             иначе самый новый из python3.13 / 3.12 / 3.11 / python3 в системе)
 
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 SCRIPTS="$REPO/scripts/rk3528"
-PYTHON="${PYTHON:-python3.13}"
+if [ -z "${PYTHON:-}" ]; then
+  if [ -x "$REPO/.venv/bin/python" ]; then
+    PYTHON="$REPO/.venv/bin/python"          # повторная установка: окружение уже есть
+  else
+    for p in python3.13 /usr/local/bin/python3.13 python3.12 /usr/local/bin/python3.12 python3.11 python3; do
+      if command -v "$p" >/dev/null 2>&1; then PYTHON="$p"; break; fi
+    done
+  fi
+fi
+PYTHON="${PYTHON:-python3}"
 WITH_BT=1; WITH_SNAP=1; WITH_DLNA=1; WITH_AEC=0
 MEM_MB=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)
 LITE=0; [ "$MEM_MB" -lt 1500 ] && LITE=1
@@ -46,7 +56,11 @@ PKGS="python3-venv bzip2 mpv socat alsa-utils libportaudio2 libsndfile1 pipewire
 [ $WITH_DLNA = 1 ] && PKGS="$PKGS gmediarender gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-pulseaudio"
 [ $WITH_BT = 1 ] && PKGS="$PKGS bluez bluez-tools libspa-0.2-bluetooth"
 [ $LITE = 1 ] && PKGS="$PKGS zram-tools"
-sudo apt-get update || echo "!! apt-get update завершился с ошибкой — проверьте зеркала в /etc/apt/sources.list*"
+sudo apt-get update || {
+  echo "!! apt-get update завершился с ошибкой — проверьте зеркала в /etc/apt/sources.list*"
+  echo "!! Если выше «пока не действителен» / «not valid yet» — на приставке неверное время: $(date '+%d.%m.%Y %H:%M')."
+  echo "!!   Исправить: sudo timedatectl set-ntp true  (или вручную: sudo date -s '2026-10-27 22:00')"
+}
 # ставим только те пакеты, что есть в репозиториях: иначе apt откажется ставить и все остальные
 AVAILABLE=""; MISSING=""
 for p in $PKGS; do
@@ -72,6 +86,10 @@ if [ -n "$MISSING" ]; then
 fi
 
 echo "==> Python-окружение ($PYTHON)"
+command -v "$PYTHON" >/dev/null 2>&1 || {
+  echo "Не найден $PYTHON. Поставьте python3 (sudo apt install python3 python3-venv) или укажите PYTHON=/путь/к/python3"; exit 1; }
+"$PYTHON" -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)" || {
+  echo "Нужен Python 3.10 или новее, а $PYTHON — $("$PYTHON" -V 2>&1)"; exit 1; }
 "$PYTHON" -c "import ssl, ctypes, sqlite3" || {
   echo "Ваш $PYTHON собран без ssl/ctypes. Пересоберите с libssl-dev libffi-dev libsqlite3-dev"; exit 1; }
 if [ ! -x "$REPO/.venv/bin/pip" ]; then

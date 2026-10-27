@@ -43,7 +43,7 @@
 ```bash
 git clone -b rk3528 https://github.com/Wint-Tele100gramm/IreneWint.git ~/irene
 cd ~/irene
-PYTHON=/usr/local/bin/python3.13 bash scripts/rk3528/install.sh
+bash scripts/rk3528/install.sh     # Python берётся системный (3.10+) или PYTHON=/путь/к/python3
 ```
 Параметры: `--no-bt`, `--no-dlna`, `--no-multiroom`, `--aec` (эхоподавление), `--lite` / `--full`.
 Повторный запуск обновляет установку (AirPlay от прежних версий удаляется).
