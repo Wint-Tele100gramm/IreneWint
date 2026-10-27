@@ -121,9 +121,8 @@ def normalize(core: VACore, text: str):
         # 'no_process' оставляем как есть
         logger.debug(f'Текст после замены чисел: {text}')
 
-    change_latin = options['changeLatin'].lower() == 'no_process'
-    if (not bool(re.search('[a-zA-Z]', text)) or  # Если нет латинских букв
-            change_latin):  # или не обрабатываем латиницу
+    change_latin = options['changeLatin'].lower()
+    if not bool(re.search('[a-zA-Z]', text)) or change_latin == 'no_process':  # нет латиницы или не обрабатываем
         return text  # оставляем как есть
     elif change_latin == 'delete':  # Удаляем латиницу
         text = re.sub('[a-zA-Z]', '', text)
@@ -151,10 +150,11 @@ def normalize(core: VACore, text: str):
             logger.exception(e)
             ipa = None
 
+        # сокращения заглавными (DLNA, USB, HA) — по буквам, как их читают
+        text = re.sub(r'\b[A-Z]{2,6}\b', lambda m: ' '.join(LETTER_NAMES[c] for c in m.group(0)), text)
         if ipa is None:
-            logger.error("Текст содержит латинские буквы, возможны ошибки в библиотеках TTS")
-            logger.error("Установите eng_to_ipa: `pip install eng_to_ipa`")
-            return text
+            logger.error("Установите eng_to_ipa: `pip install eng_to_ipa` — латиница читается по буквам")
+            return latin_fallback(text)
         else:
             text = ipa.convert(text)
             logger.debug(f'Текст после преобразования латиницы в транскрипцию: {text}')
@@ -204,10 +204,28 @@ def normalize(core: VACore, text: str):
                     result += ru_ch
                 return result
 
-            text = ipa2ru(text)
+            text = latin_fallback(ipa2ru(text))   # слова, которых нет в словаре eng_to_ipa, остаются латиницей
             logger.info(f'Текст после всех преобразований: {text}')
             try:
                 logger.debug(f"Символы: {[f'{ch}: {ord(ch)}' for ch in text]}")
             except Exception as e:
                 logger.exception(e)
             return text
+
+
+# Названия английских букв — для сокращений
+LETTER_NAMES = {
+    'A': 'эй', 'B': 'би', 'C': 'си', 'D': 'ди', 'E': 'и', 'F': 'эф', 'G': 'джи', 'H': 'эйч', 'I': 'ай', 'J': 'джей',
+    'K': 'кей', 'L': 'эл', 'M': 'эм', 'N': 'эн', 'O': 'оу', 'P': 'пи', 'Q': 'кью', 'R': 'ар', 'S': 'эс', 'T': 'ти',
+    'U': 'ю', 'V': 'ви', 'W': 'дабл ю', 'X': 'экс', 'Y': 'уай', 'Z': 'зед',
+}
+# Остатки латиницы — побуквенно: синтезатор падает на любой латинской букве
+LATIN_TO_RU = {
+    'a': 'а', 'b': 'б', 'c': 'к', 'd': 'д', 'e': 'е', 'f': 'ф', 'g': 'г', 'h': 'х', 'i': 'и', 'j': 'дж', 'k': 'к',
+    'l': 'л', 'm': 'м', 'n': 'н', 'o': 'о', 'p': 'п', 'q': 'к', 'r': 'р', 's': 'с', 't': 'т', 'u': 'у', 'v': 'в',
+    'w': 'в', 'x': 'кс', 'y': 'и', 'z': 'з',
+}
+
+
+def latin_fallback(text: str) -> str:
+    return re.sub('[A-Za-z]', lambda m: LATIN_TO_RU[m.group(0).lower()], text)

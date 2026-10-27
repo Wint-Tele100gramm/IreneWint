@@ -4,6 +4,7 @@
 
 import logging
 import os
+import re
 import time
 
 from vacore import VACore
@@ -46,4 +47,9 @@ def init(core: VACore):
 
 def towavfile(core: VACore, text_to_speech: str, wavfile: str):
     options = core.plugin_options(modname)
-    core.ttsSynth.synth(core.normalize(text_to_speech), wavfile, speaker_id=options["speakerId"])
+    text = core.normalize(text_to_speech)
+    # последняя защита: vosk-tts падает на любом символе, которого нет в его словаре (латиница, эмодзи...)
+    text = (text or "").replace("—", ",").replace("–", ",")
+    text = re.sub(r"[^ЁА-Яа-яё,.?!;:()\- ]", " ", text)
+    text = re.sub(r"\s+", " ", text).strip() or "."
+    core.ttsSynth.synth(text, wavfile, speaker_id=options["speakerId"])
