@@ -352,7 +352,7 @@ function setMeter(id, v, noise) {
     + (v > 15000 ? " — слишком громко" : "");
 }
 // ---------------------------------------------------------------- музыка (мультирум)
-const lineName = id => /^stream(\d+)$/.test(id) ? "Линия " + id.slice(6) : id === "local" ? "Плеер" : id;
+const lineName = id => /^stream(\d+)$/.test(id) ? "Линия " + id.slice(6) : id === "phone" ? "Телефон" : id === "local" ? "Плеер" : id;
 function lineText(l) { return !l.playing ? "тишина" : (l.what || "музыка") + (l.paused ? " (пауза)" : ""); }
 function renderMusic() {
   const m = state.music, box = $("#music");

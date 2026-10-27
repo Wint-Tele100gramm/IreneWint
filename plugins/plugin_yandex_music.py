@@ -39,6 +39,8 @@ _api_lock = threading.Lock()
 _players = {}                # линия (поток Snapcast или "local") -> Player
 _players_lock = threading.RLock()
 _mr = None                   # MultiRoom, если snapserver доступен
+_snap_streams = set()        # все потоки snapserver (кроме idle)
+OTHER_STREAMS = ("phone",)   # потоки для других источников (Bluetooth/DLNA) — без своего mpv
 _mr_checked = 0.0
 _duck = {"saved": None, "until": 0.0}   # громкость до приглушения по имени помощника
 
@@ -113,6 +115,7 @@ def start_with_options(core: VACore, manifest: dict):
     core.music_try_handle = music_try_handle
     core.music_status = status_for_ui
     core.music_assign = ui_assign
+    core.music_line_here = line_here
     _install_ducking(core)
     if not _options.get("token"):
         print("plugin_yandex_music: не задан token — войдите в Яндекс в веб-интерфейсе (Настройки)")
@@ -150,6 +153,9 @@ def _multiroom():
     if not streams:
         logger.warning("В snapserver нет потоков pipe:// для музыки — мультирум выключен")
         return None
+    global _snap_streams
+    _snap_streams = set(streams)
+    streams = {k: v for k, v in streams.items() if k not in OTHER_STREAMS}
     mr.split_all()
     for cid, c in mr.clients().items():         # приглушённые на паузе до перезапуска Ирины
         if c["muted"]:
@@ -166,12 +172,26 @@ def _multiroom():
     return mr
 
 
-def _all_players():
+def _music_players():
+    """Линии Яндекс Музыки (свой mpv у каждой)."""
     mr = _multiroom()
     with _players_lock:
         if mr is None and LOCAL not in _players:
             _players[LOCAL] = Player(LOCAL, None)
         return [p for sid, p in sorted(_players.items()) if (mr is None) == (sid == LOCAL)]
+
+
+def _all_players():
+    """Все линии: Яндекс Музыка и другие источники в мультируме (например, «Телефон» — Bluetooth/DLNA,
+    их регистрируют другие плагины в core.extra_music_lines)."""
+    players = _music_players()
+    if _mr is not None and _core is not None:
+        players = players + [x for x in getattr(_core, "extra_music_lines", []) if x.stream in _snap_streams]
+    return players
+
+
+def _line(sid):
+    return next((p for p in _all_players() if p.stream == sid), None)
 
 
 class Player:
@@ -232,6 +252,9 @@ class Player:
 
     def paused(self):
         return bool(self.mpv.get("pause", False))
+
+    def set_pause(self, on):
+        self.mpv.set("pause", bool(on))
 
     def _stream_url(self, track):
         infos = track.get_download_info()
@@ -438,9 +461,9 @@ def _parse_rooms(core, phrase, default_here=True):
 def _player_of_room(rid):
     mr = _multiroom()
     if mr is None:
-        return _all_players()[0]
+        return _music_players()[0]
     sid = mr.stream_of(rid)
-    return _players.get(sid) if sid else None
+    return _line(sid) if sid else None
 
 
 def _target_player(core):
@@ -512,7 +535,7 @@ def _no_player_text(core, missing):
 def _pick_player(core, rooms):
     """Линия для новой музыки в комнатах rooms. (Player, None) или (None, текст отказа)."""
     mr = _multiroom()
-    players = _all_players()
+    players = _music_players()
     if mr is None:
         return players[0], None
     here = _room_id(core)
@@ -563,7 +586,7 @@ def _local_volume_get():
         if p is None or not p.active or p.paused():
             return None
         return mr.volume(LOCAL)
-    p = _all_players()[0]
+    p = _music_players()[0]
     if not p.active or p.paused():
         return None
     return p.mpv.get("volume", _options.get("volume", 60))
@@ -574,7 +597,7 @@ def _local_volume_set(value):
     if mr is not None:
         mr.set_volume(LOCAL, value)
     else:
-        _all_players()[0].mpv.set("volume", value)
+        _music_players()[0].mpv.set("volume", value)
 
 
 def _install_ducking(core):
@@ -838,9 +861,9 @@ def _pause(p, on):
     rooms = mr.rooms_of(p.stream) if mr is not None else []
     if on:
         _set_muted(rooms, True)              # тишина сразу, а не после буфера
-        p.mpv.set("pause", True)
+        p.set_pause(True)
     else:
-        p.mpv.set("pause", False)
+        p.set_pause(False)
         _set_muted(rooms, False)
 
 
@@ -870,6 +893,19 @@ def cmd_prev(core: VACore, phrase: str):
         _run(core, p.prev)
 
 
+def _stop_line(p):
+    """Остановить линию и выключить её комнаты (у линии «Телефон» stop — только пауза на телефоне)."""
+    mr = _multiroom()
+    rooms = mr.rooms_of(p.stream, connected_only=False) if mr is not None else []
+    p.stop()
+    for r in rooms:
+        try:
+            mr.assign(r, None)
+        except Exception as e:
+            logger.debug(e)
+    _set_muted(rooms, False)
+
+
 def cmd_stop(core: VACore, phrase: str):
     """Выключить музыку: здесь (если её слушают и в других комнатах — только здесь), в названных комнатах, везде."""
     mr = _multiroom()
@@ -879,7 +915,8 @@ def cmd_stop(core: VACore, phrase: str):
         return
     if re.search(r"\b(всю|везде|повсюду|всех)\b", phrase) or "всю музыку" in (core.input_cmd_full or ""):
         for p in _all_players():
-            p.stop()
+            if p.active or mr.rooms_of(p.stream, connected_only=False):
+                _stop_line(p)
         _cleanup()
         return
     rooms, _rest = _parse_rooms(core, phrase, default_here=False)
@@ -893,12 +930,12 @@ def cmd_stop(core: VACore, phrase: str):
         if others:
             _assign(core, [here], None)          # другие комнаты продолжают слушать
         else:
-            p.stop()
+            _stop_line(p)
             _cleanup()
         return
     active = [p for p in _all_players() if p.active]
     if len(active) == 1:
-        active[0].stop()
+        _stop_line(active[0])
         _cleanup()
     elif active:
         core.say("Музыка играет в нескольких местах: " + _where_text(core) + ". Скажите, где выключить, или: выключи всю музыку")
@@ -1018,7 +1055,7 @@ def _get_volume(core):
     mr = _multiroom()
     if mr is not None:
         return mr.volume(_room_id(core))
-    return _all_players()[0].mpv.get("volume", _options.get("volume", 60))
+    return _music_players()[0].mpv.get("volume", _options.get("volume", 60))
 
 
 def _set_volume(core, value):
@@ -1030,7 +1067,7 @@ def _set_volume(core, value):
     if mr is not None:
         mr.set_volume(_room_id(core), value)
     else:
-        _all_players()[0].mpv.set("volume", value)
+        _music_players()[0].mpv.set("volume", value)
 
 
 def cmd_volume_set(core: VACore, phrase: str):
@@ -1049,14 +1086,15 @@ def cmd_volume_set(core: VACore, phrase: str):
 
 def cmd_what(core: VACore, phrase: str):
     p = _target_player(core)
-    if p and p.current:
-        core.say(f"Играет {_describe(p.current)}")
-    else:
-        core.say("Сейчас ничего не играет")
+    what = p.describe() if p and p.active else ""
+    core.say(f"Играет {what}" if what else "Сейчас ничего не играет")
 
 
 def cmd_like(core: VACore, phrase: str):
     p = _target_player(core)
+    if p is not None and not isinstance(p, Player):
+        core.say("Лайк ставится только в Яндекс Музыке")
+        return
     t = p.current if p else None
     if not t:
         core.say("Сейчас ничего не играет")
@@ -1066,6 +1104,8 @@ def cmd_like(core: VACore, phrase: str):
 
 def cmd_dislike(core: VACore, phrase: str):
     p = _target_player(core)
+    if p is not None and not isinstance(p, Player):
+        return
     t = p.current if p else None
     if not t:
         return
@@ -1103,7 +1143,20 @@ def ui_assign(room_id, line, volume=None):
     if volume is not None:
         mr.set_volume(room_id, volume)
         return
-    if line and line not in _players:
+    if line and _line(line) is None:
         raise ValueError("нет такой линии")
     mr.assign(room_id, line or None)
     _cleanup()
+
+
+def line_here(core, line_id, phrase):
+    """Для других плагинов: «блютуз на кухне» — комнаты из фразы (или эта) слушают линию line_id.
+    False — мультирум не работает или линия не готова (пусть плагин скажет сам)."""
+    if _multiroom() is None:
+        return False
+    p = _line(line_id)
+    if p is None or not p.active:
+        return False
+    rooms, _rest = _parse_rooms(core, phrase)
+    _join(core, rooms, p)
+    return True
