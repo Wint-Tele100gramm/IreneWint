@@ -6,8 +6,7 @@
 # сервер сам присылает события {"event":"rooms"|"log"|"phrase"|..., "data":...}.
 
 import asyncio
-
-from websockets.exceptions import ConnectionClosed
+import base64
 import collections
 import dataclasses
 import hmac
@@ -18,6 +17,10 @@ import secrets
 import threading
 import time
 import urllib.parse
+
+from websockets.exceptions import ConnectionClosed
+
+from utils import firmware
 
 logger = logging.getLogger("rooms")
 
@@ -118,6 +121,7 @@ class WebUI:
         self.yandex_login = {"state": "idle"}
         self._yandex_cancel = False
         self.started = time.time()
+        self.fw_uploads = {}                    # загрузки прошивок по частям: id -> {"name", "size", "data"}
         logger.addHandler(_LogHandler(self))
 
     # ---------------------------------------------------------------- события на страницы
@@ -205,6 +209,16 @@ class WebUI:
             if folder and name.endswith(".wav") and os.path.isfile(full):
                 with open(full, "rb") as f:
                     return self._http(connection, 200, f.read(), "audio/wav")
+        if path.startswith("/fw/"):
+            # прошивка для клиента ESP32 (команда ota): ключ — тот же token, что у клиентов
+            key = urllib.parse.parse_qs(url.query).get("key", [""])[0]
+            token = self.server.options.get("token") or ""
+            if token and not hmac.compare_digest(key.encode(), token.encode()):
+                return self._http(connection, 403, b"forbidden", "text/plain")
+            full = firmware.path_of(urllib.parse.unquote(path[len("/fw/"):]))
+            if full:
+                with open(full, "rb") as f:
+                    return self._http(connection, 200, f.read(), "application/octet-stream")
         if path == "/favicon.ico":
             return self._http(connection, 204, b"", "image/x-icon")
         return self._http(connection, 404, "Не найдено".encode(), "text/plain; charset=utf-8")
@@ -289,6 +303,15 @@ class WebUI:
             if rid not in seen:
                 result.append({"id": rid, "name": name, "connected": False, "local": rid == "local",
                                "assigned": True, "levels": []})
+        latest = {}
+        for f in firmware.list_all():
+            latest.setdefault(f["chip"], f)
+        for r in result:
+            chip = r.get("target") or firmware.chip_of_model(r.get("chip") or "")
+            f = latest.get(chip)
+            if f and r.get("connected") and not r.get("local") and \
+                    firmware.version_tuple(f["version"]) > firmware.version_tuple(str(r.get("fw") or "")):
+                r["fw_new"] = {"version": f["version"], "file": f["file"]}
         music = self.music_state()
         for r in result:
             if r["id"] in music.get("rooms", {}):
@@ -407,6 +430,78 @@ class WebUI:
             raise ValueError("Плагин Яндекс Музыки не загружен")
         fn(params["id"], None, volume=max(0, min(100, int(params["value"]))))
         return int(params["value"])
+
+    # ---------------------------------------------------------------- прошивки клиентов (обновление по воздуху)
+    def api_fw_list(self, params):
+        return firmware.list_all()
+
+    def api_fw_upload_begin(self, params):
+        size = int(params.get("size") or 0)
+        if not 0 < size <= firmware.MAX_SIZE:
+            raise ValueError("Неверный размер файла")
+        uid = secrets.token_hex(6)
+        self.fw_uploads = {k: v for k, v in self.fw_uploads.items() if time.time() - v["t"] < 600}
+        self.fw_uploads[uid] = {"name": str(params.get("name") or ""), "size": size, "data": bytearray(),
+                                "t": time.time()}
+        return uid
+
+    def api_fw_upload_chunk(self, params):
+        up = self.fw_uploads.get(params.get("id"))
+        if up is None:
+            raise ValueError("Загрузка не найдена — начните заново")
+        up["data"] += base64.b64decode(params["data"])
+        if len(up["data"]) > up["size"]:
+            del self.fw_uploads[params["id"]]
+            raise ValueError("Файл больше, чем заявлено")
+        return len(up["data"])
+
+    def api_fw_upload_end(self, params):
+        up = self.fw_uploads.pop(params.get("id"), None)
+        if up is None or len(up["data"]) != up["size"]:
+            raise ValueError("Файл загрузился не полностью — попробуйте ещё раз")
+        try:
+            info = firmware.save(bytes(up["data"]), up["name"])
+        except firmware.FirmwareError as e:
+            raise ValueError(str(e))
+        logger.warning(f"Загружена прошивка клиентов {info['version']} для "
+                       f"{firmware.CHIP_TITLES.get(info['chip'], info['chip'])} ({info['size'] // 1024} КБ)")
+        return info
+
+    def api_fw_delete(self, params):
+        firmware.delete(params["file"])
+        return firmware.list_all()
+
+    def api_fw_update(self, params):
+        """Разослать прошивку клиентам. ids — список id или "all" (все подходящие с более старой версией)."""
+        info = firmware.get(params.get("file"))
+        if info is None:
+            raise ValueError("Нет такой прошивки")
+        ids = params.get("ids") or "all"
+        port = self.server.options["port"]
+        key = urllib.parse.quote(self.server.options.get("token") or "")
+        started, skipped = [], []
+        for r in list(self.server.rooms.values()):
+            if not r.connected or r.local or (ids != "all" and r.id not in ids):
+                continue
+            chip = r.info.get("target") or firmware.chip_of_model(r.info.get("chip") or "")
+            if chip != info["chip"]:
+                if ids != "all":
+                    skipped.append(f"{r.name}: другой чип ({firmware.CHIP_TITLES.get(chip, chip or '?')})")
+                continue
+            if ids == "all" and firmware.version_tuple(str(r.info.get("fw"))) >= firmware.version_tuple(info["version"]):
+                continue
+            if "ota" not in r.caps:
+                skipped.append(f"{r.name}: прошивка {r.info.get('fw')} не умеет обновляться через сервер — "
+                               "один раз обновите из Arduino IDE")
+                continue
+            host = getattr(r, "server_ip", "") or "irene.local"
+            url = f"http://{host}:{port}/fw/{info['file']}?key={key}"
+            r.send_json({"type": "ota", "url": url, "md5": info["md5"], "size": info["size"],
+                         "version": info["version"]})
+            r.info["ota"] = {"state": "start", "pct": 0, "version": info["version"], "t": time.time()}
+            started.append(r.name)
+            logger.warning(f"{r.name}: обновление прошивки {r.info.get('fw')} -> {info['version']}")
+        return {"started": started, "skipped": skipped}
 
     def api_room_say(self, params):
         room = self.server.rooms.get(params.get("id") or "")

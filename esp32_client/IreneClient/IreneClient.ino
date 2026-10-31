@@ -7,6 +7,7 @@
 //  - 3.0: музыка по комнатам — клиент Snapcast (snap_proto.h): синхронно с другими комнатами, голос Ирины
 //         поверх музыки, музыка притихает, пока Ирина слушает команду и отвечает
 //  - 3.1: стерео 44100 Гц (S3), эхо- и шумоподавление микрофона на S3 (mic_aec.h, ESP-SR)
+//  - 3.2: обновление прошивки через сервер Ирины (веб-интерфейс) с откатом, если новая не заработала
 //
 // Протокол описан в начале runva_rooms.py.
 //
@@ -26,6 +27,9 @@
 #include <WebSocketsClient.h>
 #include <ArduinoJson.h>
 #include <WiFiClient.h>
+#include <HTTPClient.h>
+#include <Update.h>
+#include "esp_ota_ops.h"
 #include <new>
 #include <freertos/stream_buffer.h>
 #include "esp_timer.h"
@@ -54,6 +58,10 @@ static const int SAMPLE_RATE = 16000;
 static const int FRAME = 320;                       // 20 мс при 16 кГц
 static const int FRAMES_PER_PACKET = 4;             // отправляем пакетами по 80 мс
 static const int PREROLL_FRAMES = VAD_PREROLL_MS / 20;
+// метка прошивки: по ней сервер узнаёт версию и чип в загруженном файле .bin
+#define FW_TARGET CONFIG_IDF_TARGET
+const char FW_TAG[] __attribute__((used)) = "IRENE_FW:" FW_VERSION ":" FW_TARGET ":";
+
 static const int AMP_CH = AMP_STEREO ? 2 : 1;       // каналов в очереди музыки (на выход всегда L и R)
 static const int BLOCK = AMP_RATE >= 44100 ? 512 : 256;   // блок воспроизведения = один буфер DMA (11,6 мс)
 static const int AMP_DMA_BUFS = 4;                  // буферов DMA: задержка ~46 мс, её учитывает синхронизация
@@ -91,6 +99,12 @@ volatile bool playing = false;       // идёт ответ (от tts_start до
 volatile bool ttsEnded = false;      // сервер прислал весь ответ
 volatile int pendingRate = 22050;
 volatile uint32_t playEndMs = 0;
+
+// обновление прошивки через сервер
+volatile bool otaRequested = false, otaActive = false;
+String otaUrl, otaMd5;
+uint32_t otaSize = 0;
+bool otaPendingVerify = false;           // загружена новая прошивка: подтвердить, когда она дозвонится до сервера
 
 // музыка (Snapcast): сеть -> snapSched -> задача воспроизведения
 WiFiClient snapSock;
@@ -640,6 +654,14 @@ void snapTask(void*) {
   uint16_t msgId = 1;
   uint32_t nextTry = 0, lastTimeReq = 0, failures = 0;
   for (;;) {
+    if (otaActive) {                       // идёт обновление: сеть и память — ему
+      if (snapSock.connected()) snapSock.stop();
+      snapConnected = false;
+      snapFormatOk = false;
+      snapSched.requestFlush();
+      vTaskDelay(pdMS_TO_TICKS(200));
+      continue;
+    }
     if (WiFi.status() != WL_CONNECTED || snapHost.isEmpty()) {
       vTaskDelay(pdMS_TO_TICKS(500));
       continue;
@@ -742,6 +764,8 @@ void sendHello() {
   caps.add("config");
   caps.add("meter");
   caps.add("agc");
+  caps.add("ota");                         // обновление прошивки через сервер
+  doc["target"] = FW_TARGET;
   if (snapParser) caps.add("snap");        // музыка через Snapcast: сервер шлёт голос на 22050 Гц
 #if MIC_AEC
   if (micproc::ready) caps.add("aec");     // эхо- и шумоподавление: переключатели в веб-интерфейсе
@@ -819,10 +843,17 @@ void onText(uint8_t* payload, size_t length) {
       saveVolume();
     }
     Serial.printf("Сервер: %s, громкость %d\n", t, (int)volumePct);
+    if (!strcmp(t, "welcome")) confirmFirmware();
   } else if (!strcmp(t, "config")) {
     applyServerConfig(doc);
   } else if (!strcmp(t, "meter")) {
     meterOn = doc["enable"] | false;          // сервер включает индикатор, пока открыта страница
+  } else if (!strcmp(t, "ota")) {
+    otaUrl = (const char*)(doc["url"] | "");
+    otaMd5 = (const char*)(doc["md5"] | "");
+    otaSize = doc["size"] | 0;
+    if (otaUrl.length() && !otaActive) otaRequested = true;   // само обновление — в loop(), не здесь
+    Serial.printf("Сервер: обновить прошивку до %s\n", (const char*)(doc["version"] | "?"));
   } else if (!strcmp(t, "error")) {
     Serial.printf("Ошибка от сервера: %s\n", (const char*)(doc["message"] | ""));
   }
@@ -1128,6 +1159,101 @@ void processMic() {
   if (silenceMs >= hang || speechMs >= VAD_MAX_MS) endSpeech();
 }
 
+// ---------------- обновление прошивки через сервер ----------------
+void sendOtaState(const char* state, int pct, const char* msg) {
+  if (!wsConnected) return;
+  JsonDocument doc;
+  doc["type"] = "ota";
+  doc["state"] = state;
+  doc["pct"] = pct;
+  doc["msg"] = msg;
+  String s;
+  serializeJson(doc, s);
+  ws.sendTXT(s);
+  ws.loop();
+}
+
+void otaFail(const char* msg) {
+  Serial.printf("Обновление не удалось: %s\n", msg);
+  sendOtaState("error", 0, msg);
+  otaActive = false;
+}
+
+// Скачать прошивку с сервера и записать во второй раздел. Старая остаётся — если новая не заработает, откат.
+void runOta() {
+  otaRequested = false;
+  otaActive = true;
+  playing = false;                         // ответ и музыку — потом
+  Serial.printf("Обновление прошивки: %s (%u КБ)\n", otaUrl.c_str(), (unsigned)(otaSize / 1024));
+  sendOtaState("start", 0, "");
+  delay(300);                              // задача Snapcast отпускает сеть
+  HTTPClient http;
+  http.setTimeout(15000);
+  if (!http.begin(otaUrl)) return otaFail("неверный адрес");
+  int code = http.GET();
+  if (code != 200) {
+    char m[48];
+    snprintf(m, sizeof(m), "сервер ответил %d", code);
+    http.end();
+    return otaFail(m);
+  }
+  int len = http.getSize();
+  if (len <= 0) len = otaSize;
+  if (len <= 0) { http.end(); return otaFail("неизвестен размер"); }
+  if (!Update.begin(len)) { http.end(); return otaFail(Update.errorString()); }
+  if (otaMd5.length() == 32) Update.setMD5(otaMd5.c_str());
+  WiFiClient* st = http.getStreamPtr();
+  static uint8_t buf[4096];
+  int got = 0, lastPct = -1;
+  uint32_t lastData = millis();
+  while (got < len) {
+    int avail = st->available();
+    if (avail <= 0) {
+      if (!http.connected() || millis() - lastData > 15000) { Update.abort(); http.end(); return otaFail("обрыв связи"); }
+      ws.loop();
+      delay(5);
+      continue;
+    }
+    int n = st->readBytes(buf, min(avail, (int)sizeof(buf)));
+    if (n <= 0) continue;
+    if (Update.write(buf, n) != (size_t)n) { Update.abort(); http.end(); return otaFail(Update.errorString()); }
+    got += n;
+    lastData = millis();
+    int pct = (int)((int64_t)got * 100 / len);
+    if (pct / 5 != lastPct / 5) {
+      lastPct = pct;
+      sendOtaState("download", pct, "");
+      Serial.printf("Обновление: %d%%\n", pct);
+    }
+  }
+  http.end();
+  if (!Update.end(true)) return otaFail(Update.errorString());   // в том числе неверная контрольная сумма
+  Serial.println("Прошивка записана, перезагрузка");
+  sendOtaState("done", 100, "");
+  delay(500);
+  ESP.restart();
+}
+
+// Новая прошивка проверяется «в деле»: загрузчик держит её на испытании, пока она не подтвердит себя.
+// Подтверждение — первое приветствие сервера. Перезагрузка до этого (сбой) — загрузчик сам вернёт прежнюю.
+extern "C" bool verifyRollbackLater() { return true; }
+
+void checkPendingFirmware() {
+  const esp_partition_t* running = esp_ota_get_running_partition();
+  esp_ota_img_states_t state;
+  if (running && esp_ota_get_state_partition(running, &state) == ESP_OK && state == ESP_OTA_IMG_PENDING_VERIFY) {
+    otaPendingVerify = true;
+    Serial.println("Новая прошивка: жду связи с сервером, иначе через 3 минуты откат на прежнюю");
+  }
+}
+
+void confirmFirmware() {
+  if (!otaPendingVerify) return;
+  otaPendingVerify = false;
+  esp_ota_mark_app_valid_cancel_rollback();
+  Serial.println("Новая прошивка подтверждена");
+}
+
 // ---------------- setup / loop ----------------
 void setup() {
   Serial.begin(115200);
@@ -1142,6 +1268,8 @@ void setup() {
   Serial.printf("Причина запуска: %s\n", resetReasonText.c_str());
   if (esp_reset_reason() == ESP_RST_BROWNOUT)
     Serial.println("!! Просела линия питания. Нужен блок питания 5 В от 1 А и конденсатор 470–1000 мкФ у усилителя");
+  Serial.printf("Прошивка: %s\n", FW_TAG);
+  checkPendingFirmware();
   loadSettings();
   setupWifi();
 
@@ -1180,6 +1308,11 @@ void setup() {
 
 void loop() {
   ws.loop();
+  if (otaRequested) runOta();
+  if (otaPendingVerify && millis() > OTA_CONFIRM_MS) {
+    Serial.println("Новая прошивка не связалась с сервером — откат на прежнюю");
+    esp_ota_mark_app_invalid_rollback_and_reboot();
+  }
   ArduinoOTA.handle();
   handleWebPortal();
   checkResetButton();

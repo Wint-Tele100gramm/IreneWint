@@ -12,6 +12,7 @@
 # рабочие файлы
 /temp/
 /tts_cache/
+/firmware/
 log.txt
 __pycache__/
 *.pyc

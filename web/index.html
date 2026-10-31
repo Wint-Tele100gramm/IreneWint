@@ -136,6 +136,15 @@ audio { height: 32px; max-width: 100%; }
     <p class="hint">Уровень речи хорошо держать в зелёной полосе (1500–5000). Ниже — прибавьте усиление
       микрофона (или включите автоусиление), выше 15000 — убавьте. Оранжевая риска — с какого уровня клиент считает
       звук речью. Клиенты с прошивкой до 2.0 настраиваются на своей странице (Setup).</p>
+    <details class="card" id="fwcard" style="margin-top:14px">
+      <summary style="margin:0">Прошивка клиентов — обновление по Wi-Fi</summary>
+      <p class="hint">В Arduino IDE: «Скетч → Экспорт скомпилированного бинарного файла», затем выберите здесь файл
+        <code>IreneClient.ino.bin</code> из папки <code>build</code> скетча (не <code>.merged.bin</code> и не <code>.bootloader.bin</code>).
+        Прошивки для ESP32 и ESP32-S3 разные — загрузите обе, если есть оба вида клиентов. Клиенту нужна прошивка 3.2+,
+        более старые один раз обновите из Arduino IDE. Если новая прошивка не подключится к Ирине за 3 минуты, клиент сам вернётся к прежней.</p>
+      <div class="row"><input type="file" id="fwFile" accept=".bin" class="grow"><button class="btn primary" id="fwUpload">Загрузить</button></div>
+      <div class="list" id="fwList" style="margin-top:10px"></div>
+    </details>
   </section>
 
   <section class="tab" id="tab-cmd">
@@ -261,7 +270,7 @@ async function start() {
   $("#login").hidden = true; $("#app").hidden = false;
   const s = await call("state");
   Object.assign(state, s);
-  renderRooms(); renderRoomSelects(); renderPhrases(); renderLog(); renderSys(s.system); showRestart(s.restart_needed); renderMusic();
+  renderRooms(); renderRoomSelects(); renderPhrases(); renderLog(); renderSys(s.system); showRestart(s.restart_needed); renderMusic(); loadFw();
   if (!started) { started = true; setInterval(async () => { try { renderSys(await call("system")); } catch {} }, 15000); }
   const tab = store.get("irene_tab"); if (tab) openTab(tab);
 }
@@ -351,6 +360,46 @@ function setMeter(id, v, noise) {
   if (t) t.textContent = `Сейчас ${v}` + (noise != null ? `, шум ${noise}` : "") + (thr ? `, речь от ${Math.round(thr)}` : "")
     + (v > 15000 ? " — слишком громко" : "");
 }
+// ---------------------------------------------------------------- прошивки клиентов
+const chipTitle = c => ({ esp32s3: "ESP32-S3", esp32: "ESP32" })[c] || c;
+async function loadFw() { try { renderFw(await call("fw.list")); } catch {} }
+function renderFw(list) {
+  const box = $("#fwList");
+  if (!list.length) { box.replaceChildren(el("div", { class: "empty" }, "Загруженных прошивок нет")); return; }
+  box.replaceChildren(...list.map(f => el("div", { class: "item" },
+    el("span", { class: "what" }, `${f.version} · ${chipTitle(f.chip)} · ${Math.round(f.size / 1024)} КБ`),
+    el("time", {}, new Date(f.uploaded * 1000).toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })),
+    el("button", { class: "btn", onclick: () => fwUpdate(f, "all") }, "Обновить все"),
+    el("button", { class: "btn danger", onclick: async () => renderFw(await act(call("fw.delete", { file: f.file }), "Удалено")) }, "×"))));
+}
+async function fwUpdate(f, ids) {
+  const who = ids === "all" ? `все клиенты ${chipTitle(f.chip)} со старой прошивкой` : "этот клиент";
+  if (!confirm(`Обновить ${who} до ${f.version}? Клиенты перезагрузятся (около минуты).`)) return;
+  const r = await act(call("fw.update", { file: f.file, ids }));
+  toast(r.started.length ? `Обновляются: ${r.started.join(", ")}` : "Обновлять некого — у всех эта версия или новее");
+  if (r.skipped.length) setTimeout(() => alert(r.skipped.join("\n")), 400);
+}
+$("#fwUpload").addEventListener("click", async () => {
+  const file = $("#fwFile").files[0];
+  if (!file) return toast("Выберите файл .bin");
+  const btn = $("#fwUpload"); btn.disabled = true;
+  try {
+    const buf = new Uint8Array(await file.arrayBuffer());
+    const id = await call("fw.upload_begin", { name: file.name, size: buf.length });
+    const CH = 256 * 1024;
+    for (let i = 0; i < buf.length; i += CH) {
+      let bin = ""; const part = buf.subarray(i, i + CH);
+      for (let j = 0; j < part.length; j += 8192) bin += String.fromCharCode.apply(null, part.subarray(j, j + 8192));
+      await call("fw.upload_chunk", { id, data: btoa(bin) });
+      btn.textContent = `${Math.min(100, Math.round((i + CH) / buf.length * 100))}%`;
+    }
+    const info = await call("fw.upload_end", { id });
+    toast(`Загружена прошивка ${info.version} для ${chipTitle(info.chip)}`);
+    $("#fwFile").value = ""; loadFw();
+  } catch (e) { toast(e.message); }
+  finally { btn.disabled = false; btn.textContent = "Загрузить"; }
+});
+
 // ---------------------------------------------------------------- музыка (мультирум)
 const lineName = id => /^stream(\d+)$/.test(id) ? "Линия " + id.slice(6) : id === "phone" ? "Телефон" : id === "local" ? "Плеер" : id;
 function lineText(l) { return !l.playing ? "тишина" : (l.what || "музыка") + (l.paused ? " (пауза)" : ""); }
@@ -409,6 +458,11 @@ function renderRooms(force) {
     add("IP", r.ip);
     add("Запуск", r.reset);
     if (r.drops) add("Обрывов Wi-Fi", r.drops);
+    if (r.ota && r.connected && Date.now() / 1000 - r.ota.t < 600) {
+      const o = r.ota, txt = o.state === "error" ? `ошибка: ${o.msg}` : o.state === "done" ? "записана, перезагрузка…"
+        : o.state === "download" ? `загрузка ${o.pct}%` : "начинается…";
+      add("Обновление", el("span", { class: "badge " + (o.state === "error" ? "warn" : "") }, `${o.version || ""} ${txt}`));
+    }
     if (r.since && r.connected) add("На связи", fmtDur(Date.now() / 1000 - r.since));
 
     // назначение комнаты
@@ -430,6 +484,9 @@ function renderRooms(force) {
       kv,
       el("div", { class: "row" }, el("span", { class: "sub" }, "Комната"), sel),
     );
+    if (r.fw_new && !(r.ota && ["start", "download", "done"].includes(r.ota.state) && Date.now() / 1000 - r.ota.t < 300))
+      card.append(el("div", { class: "row" }, el("span", { class: "grow sub" }, `Есть прошивка ${r.fw_new.version}`),
+        el("button", { class: "btn", onclick: () => fwUpdate({ file: r.fw_new.file, version: r.fw_new.version, chip: r.target }, [r.id]) }, "Обновить")));
     card.append(slider("Голос", r.volume ?? 70, 0, 100, "", !r.connected, v => call("room.volume", { id: r.id, value: v }), r.id + "v"));
     card.append(...musicRow(r));
     const remoteCfg = !r.local && (r.caps || []).includes("config");

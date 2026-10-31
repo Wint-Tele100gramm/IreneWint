@@ -13,7 +13,10 @@
 #                             {"type":"text","text":"ирина привет"}         (отладка: команда текстом)
 #                             {"type":"meter","level":..,"noise":..,"gain":..}  {"type":"state","gain":..,"vad":..,...}
 #                             (прошивка 2.0+: в hello есть "caps":["config","meter","agc"] и настройки микрофона;
-#                              3.1+ на S3: "aec" — эхо- и шумоподавление, в config/state ключи "aec","ns")
+#                              3.1+ на S3: "aec" — эхо- и шумоподавление, в config/state ключи "aec","ns";
+#                              3.2+: "ota" — обновление прошивки через сервер, в hello "target": esp32/esp32s3)
+#                             {"type":"ota","state":"download","pct":40} / "done" / "error","msg":"..."  (ход обновления)
+#   сервер -> клиент:         {"type":"ota","url":"http://<сервер>:8765/fw/<файл>?key=..","md5":"..","size":..,"version":".."}
 #   клиент -> сервер, binary: PCM s16le mono 16 кГц (только пока клиент слышит речь)
 #   сервер -> клиент, текст:  {"type":"welcome","volume":70} {"type":"wake"} {"type":"idle"}
 #                             {"type":"tts_start","rate":22050} ... {"type":"tts_end"}
@@ -628,6 +631,11 @@ class RoomServer:
                          "drops": hello.get("drops"), "ip": ws.remote_address[0], "since": time.time(),
                          "client_name": client_name, "chip": hello.get("chip"), "psram": hello.get("psram")}
             room.caps = set(hello.get("caps") or [])
+            room.info["target"] = str(hello.get("target") or "")      # esp32 / esp32s3 — для обновления прошивки
+            try:
+                room.server_ip = ws.local_address[0]                    # адрес сервера, который видит клиент
+            except Exception:
+                room.server_ip = ""
             room.info.update({k: hello[k] for k in MIC_KEYS if k in hello})
             if isinstance(hello.get("volume"), int):
                 room.volume = max(0, min(100, hello["volume"]))
@@ -660,6 +668,16 @@ class RoomServer:
                     room.info["gain"] = data.get("gain", room.info.get("gain"))
                 elif t == "state":
                     room.info.update({k: data[k] for k in MIC_KEYS if k in data})
+                elif t == "ota":
+                    # ход обновления прошивки: start / download (pct) / done / error (msg)
+                    st = {"state": data.get("state"), "pct": int(data.get("pct") or 0),
+                          "msg": str(data.get("msg") or ""), "version": (room.info.get("ota") or {}).get("version"),
+                          "t": time.time()}
+                    room.info["ota"] = st
+                    if st["state"] == "done":
+                        logger.warning(f"«{room.name}»: прошивка записана, клиент перезагружается")
+                    elif st["state"] == "error":
+                        logger.warning(f"«{room.name}»: обновление не удалось — {st['msg']}")
         except Exception as e:
             logger.info(f"Клиент {getattr(ws, 'remote_address', '?')}: {e}")
         finally:
