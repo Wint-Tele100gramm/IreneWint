@@ -70,7 +70,7 @@ def start(core: VACore):
             "volume": 60,
             "duck_volume": 15,
             "max_bitrate": 320,
-            "mpv_args": ["--ao=wasapi"] if IS_WIN else [],
+            "mpv_args": ["--ao=wasapi"] if IS_WIN else ["--ao=pulse"],
             "multiroom": True,
             "snap_host": "127.0.0.1",
             "snap_port": 1705,

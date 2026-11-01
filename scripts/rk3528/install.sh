@@ -122,33 +122,19 @@ fi
 # остатки прежних версий, больше не нужны
 "${PIP[@]}" uninstall -y vosk >/dev/null 2>&1 || true
 
-echo "==> Настройки Ирины"
+echo "==> Настройки Ирины (все — в папке options)"
 mkdir -p "$REPO/options" "$REPO/temp"
-for f in "$REPO"/options_rk3528/*.json; do
-  [ -e "$REPO/options/$(basename "$f")" ] || cp "$f" "$REPO/options/"
-done
+# значения по умолчанию — в коде; в options/ лежат только ваши настройки. Переезд со старой раскладки:
+[ -e "$REPO/runva_rooms.json" ] && [ ! -e "$REPO/options/rooms.json" ] && mv "$REPO/runva_rooms.json" "$REPO/options/rooms.json"
 
 echo "==> Сервер комнат (клиенты ESP32)"
-if [ ! -e "$REPO/runva_rooms.json" ]; then
+ROOMS="$REPO/options/rooms.json"
+if [ ! -e "$ROOMS" ]; then
   ROOMS_TOKEN="$("$REPO/.venv/bin/python" -c 'import secrets; print(secrets.token_urlsafe(12))')"
-  cat > "$REPO/runva_rooms.json" <<JSON
-{
-    "host": "0.0.0.0",
-    "port": 8765,
-    "token": "$ROOMS_TOKEN",
-    "sherpa_model": "model-sherpa",
-    "asr_threads": 2,
-    "local_room": "",
-    "local_device": null,
-    "arbitration_ms": 450,
-    "max_segment_sec": 12,
-    "default_volume": 70,
-    "tts_chunk_bytes": 4096
-}
-JSON
-  chmod 600 "$REPO/runva_rooms.json"
+  printf '{\n    "token": "%s"\n}\n' "$ROOMS_TOKEN" > "$ROOMS"   # остальное Ирина допишет сама при запуске
 fi
-ROOMS_TOKEN="$("$REPO/.venv/bin/python" -c "import json; print(json.load(open('$REPO/runva_rooms.json'))['token'])")"
+chmod 600 "$ROOMS"
+ROOMS_TOKEN="$("$REPO/.venv/bin/python" -c "import json; print(json.load(open('$ROOMS'))['token'])")"
 
 if [ ! -s "$REPO/model-sherpa/tokens.txt" ] && [ ! -s "$REPO/model-sherpa/lang/tokens.txt" ]; then
   echo "==> Модель распознавания речи (потоковая Vosk, малая int8)"

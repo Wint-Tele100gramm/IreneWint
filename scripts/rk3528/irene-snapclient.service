@@ -4,7 +4,7 @@ After=irene-snapserver.service pipewire.service pipewire-pulse.service
 Wants=irene-snapserver.service
 
 [Service]
-# ID "local" — комната приставки (local_room в runva_rooms.json). Звук — через ALSA default (PipeWire).
+# ID "local" — комната приставки (local_room в options/rooms.json). Звук — через ALSA default (PipeWire).
 ExecStart=/usr/bin/snapclient --host 127.0.0.1 --hostID local --player alsa
 Restart=on-failure
 RestartSec=3

@@ -4,7 +4,7 @@
 # Клиент по Wi-Fi отправляет звук на сервер (WebSocket), сервер распознаёт речь (Vosk через sherpa-onnx),
 # выполняет команду и озвучивает ответ (TTS) — звук ответа уходит в ту комнату, откуда пришла команда.
 #
-# Запуск:  python runva_rooms.py              (настройки в runva_rooms.json, создаётся при первом запуске)
+# Запуск:  python runva_rooms.py              (настройки в options/rooms.json, создаётся при первом запуске)
 #          python runva_rooms.py --local-room "Гостиная"   (+ микрофон и динамик самой приставки как комната)
 #
 # Протокол (WebSocket, путь "/"):
@@ -74,7 +74,9 @@ DEFAULT_OPTIONS = {
     "local_volume": 100,         # громкость голоса на динамике приставки/ноутбука, % (поверх системной)
     "local_mic_gain_db": 0,      # усиление микрофона приставки/ноутбука, дБ (тихие встроенные микрофоны: 10–20)
 }
-OPTIONS_FILE = os.path.splitext(os.path.abspath(__file__))[0] + ".json"
+ROOT = os.path.dirname(os.path.abspath(__file__))
+OPTIONS_FILE = os.path.join(ROOT, "options", "rooms.json")   # все настройки Ирины — в папке options
+OLD_OPTIONS_FILE = os.path.join(ROOT, "runva_rooms.json")    # здесь они лежали до версии с одной папкой
 MIC_KEYS = ("gain", "vad", "hang", "agc", "agc_max", "aec", "ns")   # настройки микрофона клиента (2.0+; aec/ns — 3.1+ на S3)
 SNAP_RATE = 22050            # частота потоков Snapcast (scripts/rk3528/snapserver.conf) — на ней играют клиенты 3.0+
 
@@ -790,7 +792,7 @@ class RoomServer:
                 asyncio.ensure_future(self.ui.ticker())
                 logger.warning(f"Веб-интерфейс: http://<IP приставки>:{self.options['port']}/")
             if not self.options["token"]:
-                print("ВНИМАНИЕ: token не задан в runva_rooms.json — подключиться может любой в сети")
+                print("ВНИМАНИЕ: token не задан в options/rooms.json — подключиться может любой в сети")
             await srv.serve_forever()
 
     # --- микрофон самой приставки как ещё одна комната ---
@@ -828,7 +830,7 @@ class RoomServer:
                 logger.error(f"Не удалось открыть микрофон приставки: {e}. Устройства ввода:\n"
                              + "\n".join(f"  {i}: {d['name']}" for i, d in enumerate(sd.query_devices())
                                           if d["max_input_channels"] > 0)
-                             + "\nУкажите номер или часть имени в runva_rooms.json -> \"local_device\"")
+                             + "\nУкажите номер или часть имени в options/rooms.json -> \"local_device\"")
 
         threading.Thread(target=run, name="local-mic", daemon=True).start()
 
@@ -888,7 +890,14 @@ def main():
     parser.add_argument("--dump-audio", metavar="ПАПКА", help="сохранять звук каждой фразы в WAV (отладка)")
     args = parser.parse_args()
 
-    options = load_options(py_file=os.path.abspath(__file__), default_options=DEFAULT_OPTIONS)
+    os.makedirs(os.path.dirname(OPTIONS_FILE), exist_ok=True)
+    if not os.path.exists(OPTIONS_FILE) and os.path.exists(OLD_OPTIONS_FILE):
+        os.replace(OLD_OPTIONS_FILE, OPTIONS_FILE)    # переезд из корня в options/
+    options = load_options(options_file=OPTIONS_FILE, default_options=DEFAULT_OPTIONS)
+    try:
+        os.chmod(OPTIONS_FILE, 0o600)                 # там ключ клиентов
+    except OSError:
+        pass
     if args.local_room is not None:
         options["local_room"] = args.local_room
     if args.port:

@@ -14,7 +14,9 @@ CONF="$CONF_DIR/50-irene-aec.conf"
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 
 set_barge_in() {
-  "$REPO/.venv/bin/python" - "$REPO/runva_rooms.json" "$1" <<'PYEOF'
+  ROOMS="$REPO/options/rooms.json"
+  [ -e "$ROOMS" ] || ROOMS="$REPO/runva_rooms.json"
+  "$REPO/.venv/bin/python" - "$ROOMS" "$1" <<'PYEOF'
 import json, sys
 path, value = sys.argv[1], sys.argv[2] == "1"
 with open(path, encoding="utf-8") as f:

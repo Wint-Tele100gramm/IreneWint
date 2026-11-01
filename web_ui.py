@@ -29,7 +29,7 @@ PAGE = os.path.join(ROOT, "web", "index.html")
 
 
 # ---------------------------------------------------------------- описание настроек для страницы
-# file: "rooms" — runva_rooms.json, иначе имя плагина (options/<plugin>.json).
+# file: "rooms" — options/rooms.json (сервер комнат), иначе имя плагина (options/<plugin>.json).
 # live: изменение действует сразу; иначе — после перезапуска Ирины (страница предложит перезапустить).
 
 SETTINGS = [

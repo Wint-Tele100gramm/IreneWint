@@ -26,7 +26,10 @@ async def main():
     ap.add_argument("--mute", action="store_true", help="не проигрывать ответ")
     args = ap.parse_args()
 
-    with open(os.path.join(ROOT, "runva_rooms.json"), encoding="utf-8") as f:
+    path = os.path.join(ROOT, "options", "rooms.json")
+    if not os.path.exists(path):
+        path = os.path.join(ROOT, "runva_rooms.json")      # до переезда настроек в options/
+    with open(path, encoding="utf-8") as f:
         opts = json.load(f)
     text = " ".join(args.text).lower()
     if not text.startswith("ирин"):

@@ -39,7 +39,7 @@ def start(core: VACore):
         "default_options": {
             "isOnline": True,
             "useTTSCache": True,
-            "ttsEngineId": "vosk",
+            "ttsEngineId": "silero",
             "playWavEngineId": "sounddevice" if os.name == "nt" else "aplay",
             "voiceAssNames": "ирина|ирины|ирину",
             "logPolicy": "cmd",

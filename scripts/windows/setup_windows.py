@@ -59,26 +59,19 @@ def write_json(path, data):
 
 
 def setup_options():
-    print("==> Настройки")
+    print("==> Настройки (все — в папке options)")
     os.makedirs(OPTIONS, exist_ok=True)
-    src = os.path.join(ROOT, "options_rk3528")
-    for name in os.listdir(src):
-        if name.endswith(".json") and not os.path.exists(os.path.join(OPTIONS, name)):
-            shutil.copy(os.path.join(src, name), OPTIONS)
-
-    core = read_json(os.path.join(OPTIONS, "core.json"))
-    core["playWavEngineId"] = "sounddevice"          # aplay есть только в Linux
-    if core.get("ttsEngineId") in (None, "vosk"):
+    # значения по умолчанию — в коде Ирины; здесь только то, что спрашиваем у пользователя
+    core_path = os.path.join(OPTIONS, "core.json")
+    core = read_json(core_path)
+    if core.get("ttsEngineId") == "vosk":
         core["ttsEngineId"] = "silero"                # vosk-tts больше нет
-    write_json(os.path.join(OPTIONS, "core.json"), core)
+        write_json(core_path, core)
 
-    music_path = os.path.join(OPTIONS, "plugin_yandex_music.json")
-    music = read_json(music_path)
-    if music:
-        music["mpv_args"] = ["--ao=wasapi"]
-        write_json(music_path, music)
-
-    rooms_path = os.path.join(ROOT, "runva_rooms.json")
+    rooms_path = os.path.join(OPTIONS, "rooms.json")
+    old_rooms = os.path.join(ROOT, "runva_rooms.json")
+    if not os.path.exists(rooms_path) and os.path.exists(old_rooms):
+        os.replace(old_rooms, rooms_path)              # переезд из корня в options/
     rooms = read_json(rooms_path)
     if not rooms.get("token"):
         print()
