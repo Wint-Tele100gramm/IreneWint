@@ -111,8 +111,15 @@ class VACore(JaaCore):
 
         if self.ttsEngineId not in self.ttss and "silero" in self.ttss:
             # прежние настройки ("vosk"): vosk-tts больше нет, голос — Silero
-            logger.warning(f"Движка озвучки «{self.ttsEngineId}» нет — использую Silero")
+            logger.warning(f"Движка озвучки «{self.ttsEngineId}» нет — использую Silero (сохраняю в options/core.json)")
             self.ttsEngineId = "silero"
+            try:
+                opts = self.plugin_options("core")
+                if opts is not None:
+                    opts["ttsEngineId"] = "silero"
+                    self.save_plugin_options("core", opts)
+            except Exception as e:
+                logger.debug(f"не сохранил ttsEngineId: {e}")
         try:
             self.ttss[self.ttsEngineId][0](self)
         except Exception as e:
