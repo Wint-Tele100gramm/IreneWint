@@ -629,7 +629,8 @@ class RoomServer:
             room.client_name = client_name
             room.info = {"fw": hello.get("fw"), "rssi": hello.get("rssi"), "reset": hello.get("reset"),
                          "drops": hello.get("drops"), "ip": ws.remote_address[0], "since": time.time(),
-                         "client_name": client_name, "chip": hello.get("chip"), "psram": hello.get("psram")}
+                         "client_name": client_name, "chip": hello.get("chip"), "psram": hello.get("psram"),
+                         "mics": hello.get("mics")}
             room.caps = set(hello.get("caps") or [])
             room.info["target"] = str(hello.get("target") or "")      # esp32 / esp32s3 — для обновления прошивки
             try:

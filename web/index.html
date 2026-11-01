@@ -454,6 +454,7 @@ function renderRooms(force) {
     add("Клиент", r.local ? "этот компьютер: микрофон и динамик" : r.id);
     if (r.client_name && r.client_name !== r.name) add("Имя в клиенте", r.client_name);
     add("Прошивка", r.local ? null : [r.fw, r.chip, r.psram ? `PSRAM ${Math.round(r.psram / 1024)} МБ` : null].filter(Boolean).join(" · "));
+    if (r.mics === 2) add("Микрофоны", "два — решётка");
     add("Wi-Fi", wifiText(r.rssi));
     add("IP", r.ip);
     add("Запуск", r.reset);

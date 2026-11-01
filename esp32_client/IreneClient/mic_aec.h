@@ -5,6 +5,10 @@
 // с привязкой ко времени, когда он прозвучит (refWrite). Микрофон знает время каждого своего отсчёта (micTime)
 // и берёт опорный сигнал за то же время. Оставшиеся несколько миллисекунд расхождения AEC подстраивает сам.
 // Шумоподавление (NS) после AEC убирает ровный фон: вентилятор, гул, остатки эха.
+//
+// Два микрофона (MIC_COUNT 2): вместо этой цепочки работает «передний край» ESP-SR (AFE) в режиме «MMR» —
+// эхоподавление на каждом микрофоне -> разделение источников (BSS) -> выбор канала, где голос чище (MISO) ->
+// шумоподавление. Голос выделяется на фоне телевизора, музыки из другого угла и отражений от стен.
 #pragma once
 
 #if MIC_AEC
@@ -166,6 +170,102 @@ void process(int16_t* frame, int n, bool doAec, bool doNs) {
     memset(frame, 0, n * 2);                         // первые миллисекунды после включения
   }
 }
+
+// ---------------- два микрофона: AFE «MMR» ----------------
+#if MIC_COUNT >= 2
+}  // namespace micproc
+#include "esp_afe_sr_iface.h"
+#include "esp_afe_sr_models.h"
+#include "esp_afe_config.h"
+namespace micproc {
+
+static const esp_afe_sr_iface_t* afe = nullptr;
+static esp_afe_sr_data_t* afeData = nullptr;
+static int feedChunk = 0, feedCh = 0;
+static int16_t* dualFifo = nullptr; static int dualCount = 0;   // кадры [мик1, мик2, опорный]
+static int16_t* feedBuf = nullptr;
+static int16_t* outFifo = nullptr; static int outCount = 0;
+static uint64_t dualHead = 0;
+static bool afeAec = true, afeNs = true;
+static volatile bool dualReady = false;
+
+bool initDual(bool aecOn, bool nsOn) {
+  if (!ready) return false;                       // кольцо опорного сигнала и часы микрофона — из init()
+  afe_config_t* c = afe_config_init("MMR", NULL, AFE_TYPE_SR, AFE_MODE_LOW_COST);
+  if (!c) return false;
+  c->aec_init = true;
+  c->se_init = true;                              // разделение источников по двум микрофонам
+  c->ns_init = true;
+  c->afe_ns_mode = AFE_NS_MODE_WEBRTC;            // без моделей во флеш-памяти
+  c->vad_init = false;                            // детектор речи — свой
+  c->wakenet_init = false;
+  c->agc_init = false;                            // автоусиление — своё
+  c->memory_alloc_mode = AFE_MEMORY_ALLOC_MORE_PSRAM;
+  c->afe_perferred_core = 0;
+  c->afe_perferred_priority = 4;
+  c->afe_linear_gain = 1.0f;
+  c = afe_config_check(c);
+  if (!c) return false;
+  afe = esp_afe_handle_from_config(c);
+  if (!afe) return false;
+  afeData = afe->create_from_config(c);
+  if (!afeData) return false;
+  feedChunk = afe->get_feed_chunksize(afeData);
+  feedCh = afe->get_feed_channel_num(afeData);
+  if (feedChunk <= 0 || feedChunk > 1024 || feedCh != 3) return false;
+  dualFifo = (int16_t*)heap_caps_malloc(FIFO_N * 3 * 2, MALLOC_CAP_SPIRAM);
+  feedBuf = (int16_t*)heap_caps_aligned_alloc(16, feedChunk * 3 * 2, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  outFifo = (int16_t*)heap_caps_malloc(FIFO_N * 2 * 2, MALLOC_CAP_SPIRAM);
+  if (!dualFifo || !feedBuf || !outFifo) return false;
+  afeAec = afeNs = true;
+  if (!aecOn) { afe->disable_aec(afeData); afeAec = false; }
+  if (!nsOn) { afe->disable_ns(afeData); afeNs = false; }
+  dualReady = true;
+  return true;
+}
+
+// Два кадра микрофонов (n отсчётов, только что прочитаны) -> очищенный кадр out той же длины (с задержкой).
+// false — выход ещё не набрался (первые десятки миллисекунд).
+bool processDual(const int16_t* a, const int16_t* b, int n, bool aecOn, bool nsOn, int16_t* out) {
+  if (aecOn != afeAec) { aecOn ? afe->enable_aec(afeData) : afe->disable_aec(afeData); afeAec = aecOn; }
+  if (nsOn != afeNs) { nsOn ? afe->enable_ns(afeData) : afe->disable_ns(afeData); afeNs = nsOn; }
+  if (dualCount + n > FIFO_N) dualCount = 0;
+  if (dualCount == 0) dualHead = micSamples - n;
+  for (int i = 0; i < n; i++) {
+    int16_t* f = dualFifo + (dualCount + i) * 3;
+    f[0] = a[i];
+    f[1] = b[i];
+    f[2] = 0;                                     // опорный — ниже, по времени отсчёта
+  }
+  dualCount += n;
+  while (dualCount >= feedChunk) {
+    int64_t t0 = sampleTimeUs(dualHead) + (int64_t)MIC_REF_DELAY_US;
+    int64_t k0 = (t0 * RATE) / 1000000;
+    for (int j = 0; j < feedChunk; j++) {
+      uint32_t k = (uint32_t)(k0 + j), slot = k % REF_N;
+      dualFifo[j * 3 + 2] = refStamp[slot] == k ? refRing[slot] : 0;
+    }
+    memcpy(feedBuf, dualFifo, feedChunk * 3 * 2);
+    afe->feed(afeData, feedBuf);
+    memmove(dualFifo, dualFifo + feedChunk * 3, (dualCount - feedChunk) * 3 * 2);
+    dualCount -= feedChunk;
+    dualHead += feedChunk;
+  }
+  for (;;) {                                      // забрать всё готовое, не дожидаясь
+    afe_fetch_result_t* r = afe->fetch_with_delay(afeData, 0);
+    if (!r || r->ret_value != 0 || !r->data || r->data_size <= 0) break;
+    int m = r->data_size / 2;
+    if (outCount + m > FIFO_N * 2) outCount = 0;
+    memcpy(outFifo + outCount, r->data, m * 2);
+    outCount += m;
+  }
+  if (outCount < n) return false;
+  memcpy(out, outFifo, n * 2);
+  memmove(outFifo, outFifo + n, (outCount - n) * 2);
+  outCount -= n;
+  return true;
+}
+#endif
 
 }  // namespace micproc
 #endif

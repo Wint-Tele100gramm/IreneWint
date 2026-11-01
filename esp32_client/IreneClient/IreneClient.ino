@@ -8,6 +8,7 @@
 //         поверх музыки, музыка притихает, пока Ирина слушает команду и отвечает
 //  - 3.1: стерео 44100 Гц (S3), эхо- и шумоподавление микрофона на S3 (mic_aec.h, ESP-SR)
 //  - 3.2: обновление прошивки через сервер Ирины (веб-интерфейс) с откатом, если новая не заработала
+//  - 3.3: два микрофона (MIC_COUNT 2): эхоподавление, разделение источников и выбор канала ESP-SR AFE
 //
 // Протокол описан в начале runva_rooms.py.
 //
@@ -129,7 +130,10 @@ float slotActivity[2] = {0, 0};      // «живость» слотов: сре�
 int slotFrames = 0, slotVotes = 0;
 static const int32_t GLITCH_MIN = 1 << 16;     // сбой — не меньше этого (в 24-битных единицах)
 static const int GLITCH_RATIO = 16;            // ...и в 16 раз больше среднего шага сигнала в кадре
-int32_t glitchTail[4] = {0, 0, 0, 0};          // последние отсчёты прошлого кадра (фильтру нужны соседи)
+int32_t glitchTail[2][4] = {{0}};              // последние отсчёты прошлого кадра каждого слота (фильтру нужны соседи)
+bool slotAlive[2] = {false, false};           // в слоте есть микрофон (для двух микрофонов)
+bool dualMic = false;                         // работаем с двумя микрофонами
+int16_t frameB[FRAME];                        // кадр второго микрофона
 uint32_t glitchCount = 0;
 int16_t frame16[FRAME];
 int16_t preroll[PREROLL_FRAMES][FRAME];
@@ -149,7 +153,7 @@ uint32_t voicedCount = 0;
 volatile bool meterOn = false;
 float meterPeak = 0;                 // максимум уровня за интервал
 uint32_t meterSentAt = 0;
-float hpPrevX = 0, hpPrevY = 0;      // фильтр постоянной составляющей
+float hpPrevX[2] = {0, 0}, hpPrevY[2] = {0, 0};   // фильтр постоянной составляющей (по слоту)
 
 // ---------------- светодиод и усилитель ----------------
 void led(bool on) {
@@ -760,6 +764,7 @@ void sendHello() {
   doc["chip"] = ESP.getChipModel();
   doc["psram"] = (uint32_t)(ESP.getPsramSize() / 1024);
   doc["mic_slot"] = micSlot;
+  doc["mics"] = dualMic ? 2 : 1;
   JsonArray caps = doc["caps"].to<JsonArray>();   // что умеет прошивка: сервер покажет нужные настройки
   caps.add("config");
   caps.add("meter");
@@ -990,6 +995,20 @@ void trackMicSlot() {
     slotActivity[ch] += acc / FRAME;
   }
   if (++slotFrames < 50) return;                     // оцениваем по секунде звука
+  for (int ch = 0; ch < 2; ch++) slotAlive[ch] = slotActivity[ch] / 50 > 0.3f;   // живой микрофон: >30% отсчётов
+#if MIC_COUNT >= 2
+  static int dualVotes = 0;
+  bool both = slotAlive[0] && slotAlive[1] && micproc::dualReady;
+  dualVotes = both == dualMic ? 0 : dualVotes + 1;
+  if (dualVotes >= 2 || (slotFrames == 50 && !dualMic && both && dualVotes > 0)) {
+    dualMic = both;
+    dualVotes = 0;
+    noiseFloor = 150;
+    Serial.printf("Микрофоны: %s (живых отсчётов: %.0f%% / %.0f%%)\n",
+                  dualMic ? "два — решётка ESP-SR" : "работает один",
+                  slotActivity[0] * 2, slotActivity[1] * 2);
+  }
+#endif
   int other = 1 - micSlot;
   bool switchIt = slotActivity[other] > slotActivity[micSlot] * 3 + 1;   // в сумме за 50 кадров
   slotVotes = switchIt ? slotVotes + 1 : 0;
@@ -1021,10 +1040,10 @@ static int32_t median5(int32_t a, int32_t b, int32_t c, int32_t d, int32_t e) {
   return v[2];
 }
 
-int deglitch(int32_t* out) {
+int deglitch(int slot, int32_t* out) {
   int32_t ext[FRAME + 4];
-  memcpy(ext, glitchTail, sizeof(glitchTail));
-  for (int i = 0; i < FRAME; i++) ext[i + 4] = micRaw[2 * i + micSlot] >> 8;
+  memcpy(ext, glitchTail[slot], sizeof(glitchTail[slot]));
+  for (int i = 0; i < FRAME; i++) ext[i + 4] = micRaw[2 * i + slot] >> 8;
   int fixed = 0;
   int64_t steps = 0;
   for (int i = 1; i < FRAME + 4; i++) steps += abs(ext[i] - ext[i - 1]);
@@ -1046,8 +1065,24 @@ int deglitch(int32_t* out) {
     if (bad) { x = m; ext[i + 2] = m; fixed++; }
     out[i] = x;
   }
-  memcpy(glitchTail, ext + FRAME, sizeof(glitchTail));
+  memcpy(glitchTail[slot], ext + FRAME, sizeof(glitchTail[slot]));
   return fixed;
+}
+
+// 24 бита -> 16 бит с усилением, без постоянной составляющей. Возвращает число отсчётов с перегрузкой.
+int toPcm16(const int32_t* clean, int slot, int16_t* out) {
+  int clipped = 0;
+  for (int i = 0; i < FRAME; i++) {
+    float x = (float)clean[i] * (micGain / 256.0f);
+    float y = x - hpPrevX[slot] + 0.995f * hpPrevY[slot];
+    hpPrevX[slot] = x;
+    hpPrevY[slot] = y;
+    int32_t s = (int32_t)y;
+    if (s > 32767) { s = 32767; clipped++; }
+    if (s < -32768) { s = -32768; clipped++; }
+    out[i] = (int16_t)s;
+  }
+  return clipped;
 }
 
 void processMic() {
@@ -1059,33 +1094,29 @@ void processMic() {
 #endif
   trackMicSlot();
 
-  // 24-битные отсчёты живого слота + убираем одиночные сбои шины I2S (щелчки)
+  // 24-битные отсчёты живого слота (или обоих) + убираем одиночные сбои шины I2S (щелчки)
   int32_t clean[FRAME];
-  int glitches = deglitch(clean);
+  int slotA = dualMic ? 0 : micSlot;
+  int glitches = deglitch(slotA, clean);
+  int clipped = toPcm16(clean, slotA, frame16);
+  if (dualMic) {
+    glitches += deglitch(1, clean);
+    clipped += toPcm16(clean, 1, frameB);
+  }
   if (glitches) glitchCount += glitches;
 
-  // 24 бита -> 16 бит, убираем постоянную составляющую, считаем уровень
-  uint64_t sq = 0;
-  int clipped = 0;
-  for (int i = 0; i < FRAME; i++) {
-    float x = (float)clean[i] * (micGain / 256.0f);                         // 24 бита -> 16 бит с усилением
-    float y = x - hpPrevX + 0.995f * hpPrevY;
-    hpPrevX = x;
-    hpPrevY = y;
-    int32_t s = (int32_t)y;
-    if (s > 32767) { s = 32767; clipped++; }
-    if (s < -32768) { s = -32768; clipped++; }
-    frame16[i] = (int16_t)s;
-    sq += (int64_t)s * s;
-  }
 #if MIC_AEC
-  // эхоподавление (музыка и голос своего динамика) и шумоподавление; уровень — уже по очищенному звуку
-  if (cfg.aec || cfg.ns) {
-    micproc::process(frame16, FRAME, cfg.aec, cfg.ns);
-    sq = 0;
-    for (int i = 0; i < FRAME; i++) sq += (int64_t)frame16[i] * frame16[i];
-  }
+#if MIC_COUNT >= 2
+  if (dualMic) {
+    // два микрофона: эхоподавление на каждом, разделение источников, выбор лучшего канала, шумоподавление
+    if (!micproc::processDual(frame16, frameB, FRAME, cfg.aec, cfg.ns, frame16)) memset(frame16, 0, sizeof(frame16));
+  } else
 #endif
+  // эхоподавление (музыка и голос своего динамика) и шумоподавление; уровень — уже по очищенному звуку
+  if (cfg.aec || cfg.ns) micproc::process(frame16, FRAME, cfg.aec, cfg.ns);
+#endif
+  uint64_t sq = 0;
+  for (int i = 0; i < FRAME; i++) sq += (int64_t)frame16[i] * frame16[i];
   float rms = sqrtf((float)sq / FRAME);
 
   bool muted = playing || millis() - playEndMs < MIC_MUTE_AFTER_TTS_MS;
@@ -1297,6 +1328,28 @@ void setup() {
                   cfg.aec ? "вкл" : "выкл", cfg.ns ? "вкл" : "выкл");
   else
     Serial.println("!! Эхоподавление не запустилось (нужна PSRAM) — микрофон без него");
+#if MIC_COUNT >= 2
+  {
+    // защита: если запуск решётки однажды уронил клиента, больше не пробуем (пока не прошьют заново)
+    prefs.begin("irene", false);
+    if (prefs.getString("afe_fw", "") != FW_VERSION) {   // новая прошивка — пробуем снова
+      prefs.putString("afe_fw", FW_VERSION);
+      prefs.putBool("afe_try", false);
+    }
+    bool crashed = prefs.getBool("afe_try", false);
+    if (!crashed && micproc::ready) {
+      prefs.putBool("afe_try", true);
+      prefs.end();
+      bool ok = micproc::initDual(cfg.aec, cfg.ns);
+      prefs.begin("irene", false);
+      prefs.putBool("afe_try", false);
+      Serial.println(ok ? "Решётка из двух микрофонов готова (ESP-SR AFE)" : "!! Решётка не запустилась — один микрофон");
+    } else if (crashed) {
+      Serial.println("!! Решётка микрофонов в прошлый раз уронила клиента — работаю с одним (до новой прошивки)");
+    }
+    prefs.end();
+  }
+#endif
 #endif
   xTaskCreatePinnedToCore(playerTask, "player", 4096, NULL, 5, NULL, 1);
 
