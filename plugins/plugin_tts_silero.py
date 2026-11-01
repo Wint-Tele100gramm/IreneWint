@@ -64,7 +64,12 @@ def load_model(model_id: str, threads: int):
     if not os.path.isfile(path):
         # сама не качаем: без прогресса это выглядит как зависание при запуске
         raise FileNotFoundError(f"нет модели {path} — запустите bash scripts/rk3528/get_tts_silero.sh")
-    model = torch.package.PackageImporter(path).load_pickle("tts_models", "model")
+    import warnings
+    with warnings.catch_warnings():
+        # код внутри модели написан до Python 3.12: на «'\^'» в регулярном выражении он ругается SyntaxWarning,
+        # но работает так же — предупреждение не нужно в журнале
+        warnings.simplefilter("ignore", SyntaxWarning)
+        model = torch.package.PackageImporter(path).load_pickle("tts_models", "model")
     model.to(torch.device("cpu"))
     return model
 
