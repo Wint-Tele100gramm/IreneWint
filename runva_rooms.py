@@ -852,15 +852,28 @@ def read_wav_mono16(path):
     return rate, np.clip(a, -32768, 32767).astype("<i2").tobytes()
 
 
-def split_speech(text, min_len=25):
-    """Ответ -> предложения для озвучки по частям. Короткие («Хорошо.») склеиваются со следующим."""
+def split_speech(text, min_len=25, first_max=60):
+    """Ответ -> куски для озвучки по частям.
+    Первый кусок — как можно короче: от его синтеза зависит, через сколько Ирина начнёт говорить
+    («Правила игры.» — отдельно; длинное первое предложение режется по запятой).
+    Дальше короткие предложения склеиваются со следующим, чтобы не дробить интонацию."""
     parts = [p.strip() for p in re.split(r"(?<=[.!?…])\s+", (text or "").strip()) if p.strip()]
     out = []
     for p in parts:
-        if out and len(out[-1]) < min_len:
+        # первое склеиваем, только если оно совсем короткое («Да.», «Хорошо.»)
+        limit = 8 if len(out) == 1 else min_len
+        if out and len(out[-1]) < limit:
             out[-1] += " " + p
         else:
             out.append(p)
+    if out and len(out[0]) > first_max:
+        first = out[0]
+        cut = -1
+        for m in re.finditer(r"[,;:—–]\s", first):
+            if 15 <= m.end() <= first_max:
+                cut = m.end()
+        if cut > 0 and len(first) - cut >= 10:
+            out[0:1] = [first[:cut].strip(), first[cut:].strip()]
     return out
 
 
