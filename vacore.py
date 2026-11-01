@@ -112,9 +112,20 @@ class VACore(JaaCore):
         try:
             self.ttss[self.ttsEngineId][0](self)
         except Exception as e:
+            if self.ttsEngineId != "vosk" and "vosk" in self.ttss:
+                # например, Silero без PyTorch или без модели — говорим прежним голосом, а не молчим
+                self.print_error(f"Ошибка инициализации озвучки {self.ttsEngineId} — переключаюсь на vosk-tts", e)
+                self.ttsEngineId = "vosk"
+                try:
+                    self.ttss["vosk"][0](self)
+                    return self._init_fuzzy()
+                except Exception as e2:
+                    e = e2
             self.print_error("Ошибка инициализации озвучки (ttsEngineId) — ответы будут только текстом", e)
             self.ttsEngineId = "console"
+        self._init_fuzzy()
 
+    def _init_fuzzy(self):
         for name, (init, _) in self.fuzzy_processors.items():
             try:
                 init(self)

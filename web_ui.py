@@ -36,15 +36,27 @@ SETTINGS = [
     {"id": "assistant", "title": "Ассистент", "file": "core", "fields": [
         {"key": "voiceAssNames", "label": "Имена помощника", "type": "text",
          "help": "Через |, все формы: ирина|ирины|ирину"},
+        {"key": "ttsEngineId", "label": "Движок озвучки", "type": "select",
+         "choices": [["vosk", "vosk-tts — быстрый"], ["silero", "Silero — естественнее, медленнее"]],
+         "help": "Для Silero сначала: bash scripts/rk3528/get_tts_silero.sh (PyTorch и модель)"},
         {"key": "replyNoCommandFound", "label": "Ответ, если команда не понята", "type": "text", "live": True},
         {"key": "replyNoCommandFoundInContext", "label": "Ответ, если не понят ответ на вопрос", "type": "text",
          "live": True},
     ]},
-    {"id": "voice", "title": "Голос", "file": "plugin_tts_vosk", "fields": [
+    {"id": "voice", "title": "Голос", "file": "plugin_tts_vosk", "engine": "vosk", "fields": [
         {"key": "speakerId", "label": "Голос vosk-tts", "type": "select", "live": True,
          "choices": [[0, "0 — женский"], [1, "1 — мужской"], [2, "2 — Ирина"], [3, "3 — женский"],
                      [4, "4 — мужской"]],
          "help": "Кнопка «Послушать» скажет фразу выбранным голосом в выбранной комнате"},
+    ]},
+    {"id": "voice_silero", "title": "Голос", "file": "plugin_tts_silero", "engine": "silero", "fields": [
+        {"key": "speaker", "label": "Голос Silero", "type": "select", "live": True,
+         "choices": [["xenia", "xenia — женский"], ["baya", "baya — женский"], ["kseniya", "kseniya — женский"],
+                     ["aidar", "aidar — мужской"], ["eugene", "eugene — мужской"]],
+         "help": "Кнопка «Послушать» скажет фразу выбранным голосом в выбранной комнате"},
+        {"key": "homographs", "label": "Омографы («замок» / «замок») по смыслу", "type": "bool", "live": True},
+        {"key": "threads", "label": "Ядер процессора на озвучку", "type": "number",
+         "help": "Больше — быстрее ответ, но меньше остаётся распознаванию речи и Home Assistant"},
     ]},
     {"id": "ha", "title": "Home Assistant", "file": "plugin_homeassistant", "fields": [
         {"key": "url", "label": "Адрес", "type": "text", "live": True, "help": "Например http://192.168.2.10:8123"},
@@ -576,6 +588,8 @@ class WebUI:
     def api_settings_get(self, params):
         sections = []
         for sec in SETTINGS:
+            if sec.get("engine") and sec["engine"] != self.core.ttsEngineId:
+                continue                       # настройки другого движка озвучки
             opts = self._options_of(sec["file"])
             if opts is None:
                 continue                       # плагин не загружен
@@ -629,11 +643,18 @@ class WebUI:
         return {"changed": changed, "restart_needed": self.restart_needed}
 
     def api_voice_test(self, params):
-        opts = self.core.plugin_options("plugin_tts_vosk")
-        if opts is None:
-            raise ValueError("Голос vosk-tts не загружен")
-        opts["speakerId"] = int(params["speakerId"])
-        self.core.save_plugin_options("plugin_tts_vosk", opts)
+        if self.core.ttsEngineId == "silero":
+            opts = self.core.plugin_options("plugin_tts_silero")
+            if opts is None:
+                raise ValueError("Голос Silero не загружен")
+            opts["speaker"] = str(params.get("speaker") or opts.get("speaker", "xenia"))
+            self.core.save_plugin_options("plugin_tts_silero", opts)
+        else:
+            opts = self.core.plugin_options("plugin_tts_vosk")
+            if opts is None:
+                raise ValueError("Голос vosk-tts не загружен")
+            opts["speakerId"] = int(params["speakerId"])
+            self.core.save_plugin_options("plugin_tts_vosk", opts)
         return self.api_room_say({"id": params.get("room"), "text": "Привет! Я Ирина. Так звучит мой голос."})
 
     def api_server_restart(self, params):

@@ -156,9 +156,12 @@ if [ ! -s "$REPO/model-sherpa/tokens.txt" ] && [ ! -s "$REPO/model-sherpa/lang/t
 fi
 rm -rf "$REPO/model"   # старая модель Kaldi из прежних версий (~90 МБ) больше не используется
 
-if grep -q '"ttsEngineId": *"vosk"' "$REPO/options/core.json" 2>/dev/null; then
-  echo "==> Модель голоса vosk-tts"
-  bash "$SCRIPTS/get_tts_model.sh" || echo "!! Модель голоса не скачалась — повторите: bash $SCRIPTS/get_tts_model.sh"
+# vosk-tts ставится всегда: это и запасной голос, если Silero не загрузится
+echo "==> Модель голоса vosk-tts"
+bash "$SCRIPTS/get_tts_model.sh" || echo "!! Модель голоса не скачалась — повторите: bash $SCRIPTS/get_tts_model.sh"
+if grep -q '"ttsEngineId": *"silero"' "$REPO/options/core.json" 2>/dev/null; then
+  echo "==> Голос Silero (PyTorch и модель)"
+  bash "$SCRIPTS/get_tts_silero.sh" || echo "!! Silero не установился — повторите: bash $SCRIPTS/get_tts_silero.sh"
 fi
 
 if [ $LITE = 1 ]; then
