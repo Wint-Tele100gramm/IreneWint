@@ -113,10 +113,20 @@ def setup_tts():
     download(TTS_URL, target)
 
 
+def setup_jokes():
+    if os.path.isfile(os.path.join(ROOT, "data", "jokes.json")):
+        return
+    print("==> Анекдоты (несколько минут)")
+    import subprocess
+    if subprocess.call([sys.executable, os.path.join(ROOT, "scripts", "get_jokes.py")]) != 0:
+        print("!! Анекдоты не скачались — повторите: python scripts\\get_jokes.py")
+
+
 def main():
     setup_options()
     setup_asr()
     setup_tts()
+    setup_jokes()
     print()
     print("Готово. Запуск Ирины: run.bat")
 

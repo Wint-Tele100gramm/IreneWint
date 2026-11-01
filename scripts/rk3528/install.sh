@@ -150,6 +150,11 @@ rm -rf "$HOME"/.cache/vosk/vosk-model-tts-*
 sed -i 's/"ttsEngineId": *"vosk"/"ttsEngineId": "silero"/' "$REPO/options/core.json" 2>/dev/null || true
 rm -f "$REPO/options/plugin_tts_vosk.json"
 
+if [ ! -s "$REPO/data/jokes.json" ]; then
+  echo "==> Анекдоты (Hugging Face igorktech/anekdots, несколько минут)"
+  "$REPO/.venv/bin/python" "$REPO/scripts/get_jokes.py" || echo "!! Анекдоты не скачались — повторите: .venv/bin/python scripts/get_jokes.py"
+fi
+
 if [ $LITE = 1 ]; then
   echo "==> zram: сжатая подкачка в памяти (без неё при 1 ГБ систему может прибить OOM)"
   if swapon --show=NAME --noheadings 2>/dev/null | grep -q zram; then

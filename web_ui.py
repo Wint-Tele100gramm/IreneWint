@@ -79,6 +79,23 @@ SETTINGS = [
         {"key": "defaultMinutes", "label": "«Просто таймер» — на сколько минут", "type": "number", "live": True},
         {"key": "wavRepeatTimes", "label": "Сколько раз звучит сигнал", "type": "number", "live": True},
     ]},
+    {"id": "weather", "title": "Погода", "file": "plugin_weather", "fields": [
+        {"key": "city", "label": "Город", "type": "text", "live": True,
+         "help": "Например «Казань» — координаты найдутся сами при первом вопросе о погоде. "
+                 "Пусто — берутся широта и долгота ниже"},
+        {"key": "latitude", "label": "Широта дома", "type": "number", "step": 0.0001, "live": True,
+         "help": "Например 55.7558 (Яндекс Карты: правый клик по дому → координаты, первое число)"},
+        {"key": "longitude", "label": "Долгота дома", "type": "number", "step": 0.0001, "live": True},
+        {"key": "say_feels_like", "label": "Говорить «ощущается как»", "type": "bool", "live": True},
+        {"key": "say_wind", "label": "Говорить про ветер", "type": "bool", "live": True},
+        {"key": "say_humidity", "label": "Говорить влажность", "type": "bool", "live": True},
+        {"key": "cache_minutes", "label": "Обновлять прогноз не чаще, мин", "type": "number", "live": True},
+    ]},
+    {"id": "jokes", "title": "Анекдоты", "file": "plugin_jokes", "fields": [
+        {"key": "adult_enabled", "label": "Пошлые анекдоты (по прямой просьбе)", "type": "bool", "live": True},
+        {"key": "adult_blocked_rooms", "label": "Комнаты без пошлых анекдотов", "type": "list", "live": True,
+         "help": "Через запятую, например: Детская, Гостевая"},
+    ]},
     {"id": "server", "title": "Сервер и клиенты", "file": "rooms", "fields": [
         {"key": "token", "label": "Ключ клиентов", "type": "secret",
          "help": "Тот же ключ вписывается в настройках каждого клиента ESP32"},
@@ -591,6 +608,8 @@ class WebUI:
                 if f["type"] == "secret":
                     item["is_set"] = bool(value)
                     value = ""
+                elif f["type"] == "list":
+                    value = ", ".join(str(v) for v in (value or []))
                 item["value"] = value
                 fields.append(item)
             sections.append({"id": sec["id"], "title": sec["title"], "fields": fields})
@@ -611,6 +630,8 @@ class WebUI:
                 value = int(value) if value.is_integer() and f.get("step", 1) >= 1 else value
             elif f["type"] == "bool":
                 value = bool(value)
+            elif f["type"] == "list":
+                value = [x.strip() for x in str(value).split(",") if x.strip()]
             elif f["type"] == "select":
                 kinds = {type(c[0]) for c in f["choices"]}
                 value = int(value) if int in kinds else value
