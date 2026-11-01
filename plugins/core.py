@@ -53,7 +53,7 @@ def start(core: VACore):
             "voiceAssNameRunCmd": {},
             "log_console": True,
             "log_console_level": "WARNING",
-            "log_file": False,
+            "log_file": True,
             "log_file_level": "INFO",
             "log_file_name": "log.txt",
             "normalization_engine": "prepare",
