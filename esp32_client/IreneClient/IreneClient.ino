@@ -473,8 +473,9 @@ void playerTask(void*) {
     if (!active) {
       active = true;
       quietSince = millis();
-      lastWriteUs = esp_timer_get_time();
       ampEnable(true);
+      if (AMP_SD >= 0) vTaskDelay(pdMS_TO_TICKS(40));   // PAM8403 выходит из выключения, ЦАП снимает приглушение
+      lastWriteUs = esp_timer_get_time();
     }
 
     // ответ Ирины: пересчитываем в частоту усилителя

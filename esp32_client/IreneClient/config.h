@@ -3,7 +3,7 @@
 // Усиление, порог и паузу потом удобнее менять в веб-интерфейсе сервера (вкладка «Комнаты»).
 #pragma once
 
-#define FW_VERSION "3.3"
+#define FW_VERSION "3.4"
 
 // ---------------- распиновка ----------------
 #if defined(CONFIG_IDF_TARGET_ESP32S3)
@@ -16,8 +16,8 @@
   #define AMP_DIN   7    // DIN / SD (данные)    (адаптер: IO35) — MAX98357A DIN, PCM5102 DIN («SD»)
   #define AMP_BCLK  15   // BCLK / BCK           (адаптер: IO32)
   #define AMP_LRC   16   // LRC / LCK / LR       (адаптер: IO33)
-  #define AMP_SD    -1   // выключение усилителя в тишине (MAX98357A SD, PAM8403 SHDN): -1 — нет, или 17 («IO25»)
-  #define LED_PIN   -1   // светодиод «слушаю»: -1 — нет (светодиод адаптера «LED-IO4» сидит на GPIO35/PSRAM — не трогать)
+  #define AMP_SD    17   // включение ЦАП и усилителя (PCM5102A XSMT + PAM8403 SHDN; на плате hardware/irene-client), без них — свободен
+  #define LED_PIN   18   // светодиод «слушаю» (на плате hardware/irene-client; у адаптера «LED-IO4» — GPIO35/PSRAM, не трогать)
   #define AUDIO_BUF_BYTES (64 * 1024)   // буфер ответа (в PSRAM, если она есть)
   #define SNAP_RING_MS    2000          // очередь музыки, мс (в PSRAM): больше буфера snapserver (600 мс) с запасом
   #define AMP_RATE        44100         // частота вывода
