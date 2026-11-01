@@ -152,6 +152,10 @@ def _stem(word: str) -> str:
     return word[:5]
 
 
+def _similar(a: str, b: str) -> float:
+    return difflib.SequenceMatcher(None, a, b).ratio()
+
+
 def _stems(text: str):
     words = re.findall(r"[a-zа-яё0-9]+", (text or "").lower())
     return {_stem(w) for w in words if w not in STOP_WORDS}
@@ -195,10 +199,26 @@ def _ensure_entities(core):
 
 # ---------------- поиск устройства по фразе ----------------
 
+_last_miss = {}          # лучшее «почти найденное» устройство при неудаче — для журнала
+
+
 def _find_entities(core, phrase: str, allowed_domains=None, alternatives=None):
     """Возвращает (список entity, читаемое имя) для фразы вроде 'свет на кухне'.
     alternatives — если передан список, в него попадут равноценные устройства из разных комнат
-    (тогда стоит переспросить, какое имелось в виду)."""
+    (тогда стоит переспросить, какое имелось в виду).
+    Слова-подсказки домена («вытяжку» -> fan/switch) — только предпочтение: если среди этих доменов
+    ничего не нашлось, ищем среди всех устройств (вытяжка в HA может быть и светом light.*)."""
+    _last_miss.clear()
+    found, name = _find_entities_in(core, phrase, allowed_domains, alternatives, use_hints=True)
+    if not found and not allowed_domains:
+        miss = dict(_last_miss)
+        found, name = _find_entities_in(core, phrase, None, alternatives, use_hints=False)
+        if not found and miss.get("score", -1) > _last_miss.get("score", -1):
+            _last_miss.update(miss)
+    return found, name
+
+
+def _find_entities_in(core, phrase: str, allowed_domains, alternatives, use_hints):
     phrase = phrase.lower().replace("ё", "е").strip()
     o = _opts(core)
 
@@ -212,7 +232,7 @@ def _find_entities(core, phrase: str, allowed_domains=None, alternatives=None):
     _ensure_entities(core)
     words = re.findall(r"[a-zа-яё0-9]+", phrase)
     hint_domains = set()
-    for w in words:
+    for w in words if use_hints else []:
         hint_domains.update(DOMAIN_HINTS.get(w, []))
     if allowed_domains:
         hint_domains = (hint_domains & set(allowed_domains)) or set(allowed_domains)
@@ -266,7 +286,9 @@ def _find_entities(core, phrase: str, allowed_domains=None, alternatives=None):
         # зона считается, только если названа целиком: «мокрая зона» не должна найти «сухую зону»
         area_full = bool(e["area_stems"]) and e["area_stems"] <= query
         target = name_stems | (e["area_stems"] if area_full else set())
-        overlap = len(query & target)
+        # слово совпало точно — 1; с ошибкой распознавания («вытяшку» / «вытяжку») — 0.85
+        overlap = sum(1.0 if q in target else
+                      (0.85 if any(len(q) >= 4 and _similar(q, t) >= 0.8 for t in target) else 0.0) for q in query)
         score = overlap / max(len(query), 1)
         if overlap and area_full and not (query & name_stems):
             score -= 0.01  # попали только в зону — чуть ниже точного совпадения по имени
@@ -285,6 +307,7 @@ def _find_entities(core, phrase: str, allowed_domains=None, alternatives=None):
     scored.sort(key=lambda x: x[0], reverse=True)
     best_score = scored[0][0]
     if best_score < o.get("match_threshold", 0.45):
+        _last_miss.update(score=best_score, name=scored[0][1]["name"], id=scored[0][1]["id"])
         return [], phrase
 
     best = [e for s, e in scored if s >= best_score - 0.001]
@@ -311,6 +334,15 @@ def _check_ready(core) -> bool:
         core.say("Home Assistant не настроен. Укажите токен в настройках плагина")
         return False
     return True
+
+
+def _journal_miss(phrase):
+    if _last_miss:
+        journal.warning(f"Home Assistant: не нашла «{phrase}»; ближе всего {_last_miss['id']} «{_last_miss['name']}» "
+                        f"(похожесть {_last_miss['score']:.2f} — меньше порога; порог: «Строгость поиска устройств» "
+                        f"в настройках, или синоним в aliases)")
+    else:
+        journal.warning(f"Home Assistant: не нашла «{phrase}» — похожих устройств нет")
 
 
 def do_action(core: VACore, phrase: str, action: str):
@@ -341,6 +373,7 @@ def do_action(core: VACore, phrase: str, action: str):
         core.say("Не удалось связаться с Home Assistant")
         return
     if not entities:
+        _journal_miss(phrase)
         core.say(f"Не нашла устройство {phrase}")
         return
     if alternatives:
@@ -493,6 +526,7 @@ def set_brightness(core: VACore, phrase: str):
     where = " ".join(w for w in where.split() if extract_number(w) is None)
     entities, name = _find_entities(core, "свет " + where, ["light"])
     if not entities:
+        _journal_miss(where)
         core.say(f"Не нашла свет {where}")
         return
     try:
@@ -511,6 +545,7 @@ def query_state(core: VACore, phrase: str):
     kind = "влажность" if want_humidity else ("температура" if "темпер" in cmd or "градус" in cmd else "")
     entities, name = _find_entities(core, f"{kind} {phrase}".strip(), QUERY_DOMAINS)
     if not entities:
+        _journal_miss(phrase)
         core.say(f"Не нашла датчик {phrase}")
         return
     try:
