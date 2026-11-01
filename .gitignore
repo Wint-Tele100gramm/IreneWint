@@ -17,3 +17,6 @@ log.txt
 __pycache__/
 *.pyc
 /.idea/
+
+# журнал Freerouting
+/hardware/gen/logs/
