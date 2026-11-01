@@ -634,10 +634,9 @@ async function loadSettings() {
       if (r.changed.length) loadSettings();
     });
     const actions = el("div", { class: "row" }, el("span", { class: "grow" }));
-    if (sec.id === "voice" || sec.id === "voice_silero") {
+    if (sec.id === "voice") {
       const room = el("select"); room.dataset.rooms = "1";
-      const voice = () => sec.id === "voice" ? { speakerId: inputs.speakerId[1].value } : { speaker: inputs.speaker[1].value };
-      actions.prepend(room, el("button", { class: "btn", onclick: () => act(call("voice.test", { ...voice(), room: room.value }), "Слушайте") }, "Послушать"));
+      actions.prepend(room, el("button", { class: "btn", onclick: () => act(call("voice.test", { speaker: inputs.speaker[1].value, room: room.value }), "Слушайте") }, "Послушать"));
     }
     if (sec.id === "music") {
       const mode = el("select", { id: "yandexMode", title: "Какие права выдать Ирине" },

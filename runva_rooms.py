@@ -37,6 +37,7 @@ import json
 import logging
 import os
 import queue
+import re
 import threading
 import time
 import wave
@@ -248,6 +249,54 @@ class Room:
             self.speaking = False
             self.mute_until = time.time() + 0.4   # хвост эха в комнате
 
+    def play_stream(self, pieces):
+        """Озвучка по предложениям: первое уходит клиенту, пока синтезируются следующие.
+        pieces — итератор (частота, PCM); отдаём в темпе воспроизведения с запасом 0,3 с впереди."""
+        if not self.connected or self.ws is None:
+            if hasattr(pieces, "close"):
+                pieces.close()
+            return
+        chunk = self.server.options["tts_chunk_bytes"]
+        rate0 = None
+        sent = 0.0                               # секунд звука уже отдано
+        t0 = 0.0
+        self.speaking = True
+        try:
+            for rate, pcm in pieces:
+                if not pcm:
+                    continue
+                if "snap" in self.caps and rate != SNAP_RATE:
+                    rate, pcm = resample(rate, pcm, SNAP_RATE)
+                if rate0 is None:
+                    rate0 = rate
+                    self.server.run_coro(self.ws.send(json.dumps({"type": "tts_start", "rate": rate0})), wait=True)
+                    t0 = time.monotonic()
+                elif rate != rate0:
+                    rate, pcm = resample(rate, pcm, rate0)
+                bps = rate0 * 2
+                if sent - (time.monotonic() - t0) < 0:
+                    # синтез отстал и клиент доиграл всё — отсчёт заново, иначе завалим его буфер
+                    t0 = time.monotonic() - sent
+                for i in range(0, len(pcm), chunk):
+                    ahead = sent - (time.monotonic() - t0)
+                    if ahead > 0.3:
+                        time.sleep(ahead - 0.3)
+                    if not self.connected:
+                        return
+                    part = pcm[i:i + chunk]
+                    self.server.run_coro(self.ws.send(part), wait=True, timeout=10)
+                    sent += len(part) / bps
+        except Exception as e:
+            logger.warning(f"{self}: не удалось отправить звук: {e}")
+        finally:
+            if rate0 is not None and self.connected:
+                try:
+                    self.server.run_coro(self.ws.send(json.dumps({"type": "tts_end"})), wait=True, timeout=10)
+                except Exception:
+                    pass
+            self.speaking = False
+            self.mute_until = time.time() + 0.4
+
     async def _send_audio(self, rate, pcm):
         # отдаём звук в темпе воспроизведения (с запасом 0,3 с впереди): буфер клиента невелик,
         # а если его переполнить, клиент перестаёт обслуживать сеть и соединение рвётся
@@ -284,8 +333,7 @@ class RoomServer:
         self.asr = create_backend(options)
         logger.warning(f"Распознавание речи: {self.asr.name}")
 
-        logger.warning("Загружаю плагины и модель голоса. Если модели vosk-tts ещё нет, она скачивается (~130 МБ) "
-                       "— быстрее и с прогрессом: bash scripts/rk3528/get_tts_model.sh")
+        logger.warning("Загружаю плагины и модель голоса Silero (на слабой приставке — до полуминуты)")
         self.core = VACore()
         self.core.init_with_plugins()
         logger.warning("Модель голоса загружена")
@@ -463,9 +511,7 @@ class RoomServer:
                 logger.warning(f"{room} отключилась, ответ «{text}» не озвучен")
                 return
             core.lastSay = text
-            rate, pcm = self.synth(text)
-            if pcm:
-                room.play_pcm(rate, pcm)
+            room.play_stream(self.synth_stream(text))
 
         def routed_wav(path):
             # звуки плагинов (сигнал таймера и т.п.) — тоже в комнату, а не в динамик приставки
@@ -539,6 +585,49 @@ class RoomServer:
         finally:
             if not core.useTTSCache and os.path.exists(path):
                 os.unlink(path)
+
+    def synth_stream(self, text):
+        """Ответ по предложениям: (частота, PCM) кусками. Следующее предложение синтезируется,
+        пока звучит предыдущее, — длинный ответ начинается почти так же быстро, как короткий."""
+        parts = split_speech(text)
+        if len(parts) <= 1:
+            yield self.synth(text)
+            return
+        q = queue.Queue(maxsize=2)
+        stop = threading.Event()
+
+        def put(item):
+            while not stop.is_set():
+                try:
+                    q.put(item, timeout=0.5)
+                    return True
+                except queue.Full:
+                    pass
+            return False
+
+        def producer():
+            try:
+                for p in parts:
+                    if stop.is_set() or not put(self.synth(p)):
+                        return
+            except Exception as e:
+                logger.error(f"Озвучка «{text}»: {e}")
+            finally:
+                put(None)
+        threading.Thread(target=producer, name="tts", daemon=True).start()
+        first = True
+        try:
+            while True:
+                item = q.get()
+                if item is None:
+                    return
+                rate, pcm = item
+                if not first and pcm:
+                    yield rate, b"\x00\x00" * int(rate * 0.12)     # пауза между предложениями
+                first = False
+                yield rate, pcm
+        finally:
+            stop.set()          # клиент отключился посреди ответа — остальное не синтезируем
 
     def broadcast(self, text):
         """Озвучить во всех комнатах сразу (объявления)."""
@@ -759,6 +848,18 @@ def read_wav_mono16(path):
     if ch > 1:
         a = a.reshape(-1, ch).mean(axis=1).astype(np.int32)
     return rate, np.clip(a, -32768, 32767).astype("<i2").tobytes()
+
+
+def split_speech(text, min_len=25):
+    """Ответ -> предложения для озвучки по частям. Короткие («Хорошо.») склеиваются со следующим."""
+    parts = [p.strip() for p in re.split(r"(?<=[.!?…])\s+", (text or "").strip()) if p.strip()]
+    out = []
+    for p in parts:
+        if out and len(out[-1]) < min_len:
+            out[-1] += " " + p
+        else:
+            out.append(p)
+    return out
 
 
 def resample(rate, pcm, to_rate):

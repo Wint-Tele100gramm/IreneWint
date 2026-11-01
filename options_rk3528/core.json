@@ -2,7 +2,7 @@
     "v": "6.0",
     "isOnline": true,
     "useTTSCache": true,
-    "ttsEngineId": "vosk",
+    "ttsEngineId": "silero",
     "playWavEngineId": "aplay",
     "voiceAssNames": "ирина|ирины|ирину",
     "logPolicy": "cmd",

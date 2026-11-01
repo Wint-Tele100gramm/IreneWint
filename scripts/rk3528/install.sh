@@ -156,13 +156,13 @@ if [ ! -s "$REPO/model-sherpa/tokens.txt" ] && [ ! -s "$REPO/model-sherpa/lang/t
 fi
 rm -rf "$REPO/model"   # старая модель Kaldi из прежних версий (~90 МБ) больше не используется
 
-# vosk-tts ставится всегда: это и запасной голос, если Silero не загрузится
-echo "==> Модель голоса vosk-tts"
-bash "$SCRIPTS/get_tts_model.sh" || echo "!! Модель голоса не скачалась — повторите: bash $SCRIPTS/get_tts_model.sh"
-if grep -q '"ttsEngineId": *"silero"' "$REPO/options/core.json" 2>/dev/null; then
-  echo "==> Голос Silero (PyTorch и модель)"
-  bash "$SCRIPTS/get_tts_silero.sh" || echo "!! Silero не установился — повторите: bash $SCRIPTS/get_tts_silero.sh"
-fi
+echo "==> Голос Silero (PyTorch и модель)"
+bash "$SCRIPTS/get_tts_silero.sh" --no-bench || echo "!! Голос не установился — повторите: bash $SCRIPTS/get_tts_silero.sh"
+# прежний голос vosk-tts больше не нужен: пакет и его модель (~130 МБ)
+"${PIP[@]}" uninstall -y vosk-tts >/dev/null 2>&1 || true
+rm -rf "$HOME"/.cache/vosk/vosk-model-tts-*
+sed -i 's/"ttsEngineId": *"vosk"/"ttsEngineId": "silero"/' "$REPO/options/core.json" 2>/dev/null || true
+rm -f "$REPO/options/plugin_tts_vosk.json"
 
 if [ $LITE = 1 ]; then
   echo "==> zram: сжатая подкачка в памяти (без неё при 1 ГБ систему может прибить OOM)"

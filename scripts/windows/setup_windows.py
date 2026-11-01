@@ -1,4 +1,4 @@
-"""Подготовка Ирины на Windows: настройки, ключ клиентов, модели распознавания и голоса.
+"""Подготовка Ирины на Windows: настройки, ключ клиентов, модели распознавания и голоса (Silero).
 
 Запускается из install.bat (можно и повторно — уже сделанное не повторяется).
 """
@@ -10,14 +10,13 @@ import sys
 import tarfile
 import tempfile
 import urllib.request
-import zipfile
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 OPTIONS = os.path.join(ROOT, "options")
 ASR_NAME = "sherpa-onnx-streaming-zipformer-small-ru-vosk-int8-2025-08-16"
 ASR_URL = f"https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/{ASR_NAME}.tar.bz2"
-TTS_NAME = "vosk-model-tts-ru-0.7-multi"
-TTS_URL = f"https://alphacephei.com/vosk/models/{TTS_NAME}.zip"
+TTS_NAME = "v5_5_ru"
+TTS_URL = f"https://models.silero.ai/models/tts/ru/{TTS_NAME}.pt"
 
 
 def ask(question, default=""):
@@ -69,6 +68,8 @@ def setup_options():
 
     core = read_json(os.path.join(OPTIONS, "core.json"))
     core["playWavEngineId"] = "sounddevice"          # aplay есть только в Linux
+    if core.get("ttsEngineId") in (None, "vosk"):
+        core["ttsEngineId"] = "silero"                # vosk-tts больше нет
     write_json(os.path.join(OPTIONS, "core.json"), core)
 
     music_path = os.path.join(OPTIONS, "plugin_yandex_music.json")
@@ -110,18 +111,13 @@ def setup_asr():
 
 
 def setup_tts():
-    cache = os.path.join(os.path.expanduser("~"), ".cache", "vosk")
-    target = os.path.join(cache, TTS_NAME)
-    if os.path.isfile(os.path.join(target, "model.onnx")):
+    target = os.path.join(ROOT, "models", "silero", TTS_NAME + ".pt")
+    if os.path.isfile(target):
         print("==> Модель голоса уже есть")
         return
-    print("==> Модель голоса (~130 МБ)")
-    os.makedirs(cache, exist_ok=True)
-    archive = os.path.join(cache, TTS_NAME + ".zip")
-    download(TTS_URL, archive)
-    with zipfile.ZipFile(archive) as z:
-        z.extractall(cache)
-    os.remove(archive)
+    print("==> Модель голоса Silero (~140 МБ)")
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    download(TTS_URL, target)
 
 
 def main():

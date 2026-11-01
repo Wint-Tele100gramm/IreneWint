@@ -86,4 +86,4 @@ def after(core, what):
 - `utils.ru_words_to_num.extract_number("пятьдесят пять")` -> 55; `utils/ru_speech` — числа и время с падежами.
 - Логи, видимые в «Журнале» веб-интерфейса: `logging.getLogger("rooms").info(...)`.
 - Озвучка, проигрывание WAV и нормализация текста — тоже плагины: ключи `tts`, `playwav`, `normalizer` в манифесте
-  (см. `plugin_tts_vosk.py`, `plugin_playwav_aplay.py`, `plugin_normalizer_prepare.py`).
+  (см. `plugin_tts_silero.py`, `plugin_playwav_aplay.py`, `plugin_normalizer_prepare.py`).

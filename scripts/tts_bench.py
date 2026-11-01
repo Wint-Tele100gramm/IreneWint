@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Сравнение скорости озвучки на этой машине: Silero и vosk-tts на одних и тех же фразах.
+"""Скорость голоса Silero на этой машине.
 
-    .venv/bin/python scripts/tts_bench.py                 # Silero из options/plugin_tts_silero.json + vosk
-    .venv/bin/python scripts/tts_bench.py --threads 1 2 4 # Silero с разным числом ядер
+    .venv/bin/python scripts/tts_bench.py                 # настройки из options/plugin_tts_silero.json
+    .venv/bin/python scripts/tts_bench.py --threads 1 2 4 # с разным числом ядер
 
 Образцы голоса сохраняются в temp/tts_bench_*.wav — их можно послушать (aplay temp/tts_bench_silero_xenia.wav).
 """
@@ -71,44 +71,9 @@ def bench_silero(threads_list):
     print(f"  память процесса (пик): {rss_mb():.0f} МБ")
 
 
-def bench_vosk():
-    try:
-        from vosk_tts.model import Model
-        from vosk_tts.synth import Synth
-    except ImportError:
-        print("vosk-tts не установлен — сравнения не будет")
-        return
-    opts = {"modelId": "vosk-model-tts-ru-0.7-multi", "speakerId": 2}
-    try:
-        opts.update(json.load(open("options/plugin_tts_vosk.json", encoding="utf-8")))
-    except (OSError, ValueError):
-        pass
-    print(f"vosk-tts {opts['modelId']}, голос {opts['speakerId']}")
-    try:
-        synth = Synth(Model(model_name=opts["modelId"]))
-    except Exception as e:
-        print(f"  модель не загрузилась: {e}")
-        return
-    synth.synth("Привет.", "temp/tts_bench_warm.wav", speaker_id=opts["speakerId"])
-    total_t = total_d = 0
-    for i, text in enumerate(PHRASES):
-        path = f"temp/tts_bench_vosk_{i}.wav"
-        t = time.time()
-        synth.synth(text, path, speaker_id=opts["speakerId"])
-        took = time.time() - t
-        with wave.open(path) as w:
-            dur = w.getnframes() / w.getframerate()
-        total_t += took
-        total_d += dur
-        print(f"  фраза {i + 1}: {dur:4.1f} с речи за {took:4.2f} с")
-    print(f"  в среднем в {total_d / total_t:.1f} раза быстрее речи")
-
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--threads", type=int, nargs="+", default=None)
-    ap.add_argument("--no-vosk", action="store_true")
-    ap.add_argument("--only", choices=["silero", "vosk"], help=argparse.SUPPRESS)
     args = ap.parse_args()
     os.makedirs("temp", exist_ok=True)
     threads = args.threads
@@ -117,16 +82,7 @@ def main():
             threads = [int(json.load(open("options/plugin_tts_silero.json")).get("threads", 2))]
         except (OSError, ValueError):
             threads = [2]
-    if args.only == "silero":
-        return bench_silero(threads)
-    if args.only == "vosk":
-        return bench_vosk()
-    # каждый движок — в отдельном процессе: две модели сразу на приставке с 1 ГБ не помещаются в память
-    import subprocess
-    subprocess.run([sys.executable, __file__, "--only", "silero", "--threads", *map(str, threads)])
-    if not args.no_vosk:
-        print()
-        subprocess.run([sys.executable, __file__, "--only", "vosk"])
+    bench_silero(threads)
 
 
 if __name__ == "__main__":

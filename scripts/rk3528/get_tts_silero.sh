@@ -1,33 +1,12 @@
 #!/usr/bin/env bash
-# Ставит Silero TTS: PyTorch (CPU) в окружение Ирины, модель в models/silero, проверяет скорость.
-#     bash scripts/rk3528/get_tts_silero.sh            # поставить и проверить скорость
-#     bash scripts/rk3528/get_tts_silero.sh --use      # то же и включить Silero (ttsEngineId = silero)
-#     bash scripts/rk3528/get_tts_silero.sh --vosk     # вернуть прежний голос vosk-tts
-# После --use / --vosk: systemctl --user restart irene
+# Голос Ирины — Silero TTS: ставит PyTorch (сборка для процессора) в окружение Ирины, модель в models/silero
+# и показывает скорость синтеза на этой машине. Вызывается из install.sh; можно запускать и отдельно.
+#     bash scripts/rk3528/get_tts_silero.sh             # поставить и проверить скорость
+#     bash scripts/rk3528/get_tts_silero.sh --no-bench  # без проверки скорости
 
 set -euo pipefail
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 PY="$REPO/.venv/bin/python"
-CORE="$REPO/options/core.json"
-
-set_engine() {
-  "$PY" - "$CORE" "$1" <<'PYEOF'
-import json, sys
-path, engine = sys.argv[1], sys.argv[2]
-with open(path, encoding="utf-8") as f:
-    core = json.load(f)
-core["ttsEngineId"] = engine
-with open(path, "w", encoding="utf-8") as f:
-    json.dump(core, f, ensure_ascii=False, indent=4)
-print(f"ttsEngineId = {engine} (options/core.json)")
-PYEOF
-}
-
-if [ "${1:-}" = "--vosk" ]; then
-  set_engine vosk
-  echo "Перезапустите Ирину: systemctl --user restart irene"
-  exit 0
-fi
 
 [ -x "$PY" ] || { echo "!! Нет $PY — сначала установите Ирину (scripts/rk3528/install.sh)"; exit 1; }
 
@@ -38,12 +17,12 @@ if env | grep -qiE '^(all|https?)_proxy=socks' && \
   PIP=(env -u ALL_PROXY -u all_proxy -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy "${PIP[@]}")
 fi
 
-# Память: PyTorch с моделью занимает 300–500 МБ. На приставке с 1 ГБ вместе с распознаванием речи это слишком много.
+# Память: PyTorch с моделью занимает 450–650 МБ. На 1 ГБ работает впритык (проверено на S905: с музыкой
+# и распознаванием доступно ~120 МБ и ~190 МБ сжатой подкачки zram) — предупреждаем.
 MEM_MB=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)
-if [ "$MEM_MB" -lt 1800 ] && [ "${FORCE:-0}" != 1 ]; then
-  echo "!! На этой приставке ${MEM_MB} МБ памяти — Silero (PyTorch) с распознаванием речи в неё не поместится."
-  echo "   Оставьте vosk-tts. Поставить всё равно: FORCE=1 bash $0"
-  exit 1
+if [ "$MEM_MB" -lt 1800 ]; then
+  echo "!! Памяти ${MEM_MB} МБ: голос Silero займёт 450–650 МБ. Нужна подкачка zram (install.sh включает её сам);"
+  echo "   число ядер на озвучку можно уменьшить на странице Ирины (Голос)."
 fi
 
 if "$PY" -c "import torch" 2>/dev/null; then
@@ -72,14 +51,8 @@ else
 fi
 du -sh "$DIR/$MODEL.pt"
 
-echo "==> Проверка скорости (Silero и для сравнения vosk-tts)"
-"$PY" "$REPO/scripts/tts_bench.py" || echo "!! Проверка не прошла — пришлите вывод выше"
-
-if [ "${1:-}" = "--use" ]; then
-  set_engine silero
-  echo "Перезапустите Ирину: systemctl --user restart irene"
-else
-  echo
+if [ "${1:-}" != "--no-bench" ]; then
+  echo "==> Проверка скорости (Ирину на время проверки лучше остановить: systemctl --user stop irene)"
+  "$PY" "$REPO/scripts/tts_bench.py" || echo "!! Проверка не прошла — пришлите вывод выше"
   echo "Послушать образец: aplay $REPO/temp/tts_bench_silero_*.wav"
-  echo "Включить Silero:   bash $0 --use && systemctl --user restart irene"
 fi

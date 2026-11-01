@@ -30,6 +30,10 @@ echo ==^> Ставлю пакеты (несколько минут)
 .venv\Scripts\python -m pip install --disable-pip-version-check -r requirements.txt
 if errorlevel 1 goto failed
 
+echo ==^> Ставлю PyTorch для голоса Silero (сборка без видеокарты, около 200 МБ)
+.venv\Scripts\python -c "import torch" >nul 2>nul || .venv\Scripts\python -m pip install --disable-pip-version-check torch --index-url https://download.pytorch.org/whl/cpu
+if errorlevel 1 goto failed
+
 .venv\Scripts\python scripts\windows\setup_windows.py
 if errorlevel 1 goto failed
 

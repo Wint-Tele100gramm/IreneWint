@@ -1,7 +1,6 @@
-# Озвучка через Silero TTS (офлайн, PyTorch).
-# Модель — один файл models/silero/<modelId>.pt; скачивает и проверяет скорость scripts/rk3528/get_tts_silero.sh.
-# Включить: в options/core.json "ttsEngineId": "silero" (или на странице Ирины: Ассистент → Движок озвучки).
-# Вернуть прежний голос: "ttsEngineId": "vosk".
+# Голос Ирины: Silero TTS (офлайн, PyTorch).
+# Модель — один файл models/silero/<modelId>.pt; PyTorch и модель ставит scripts/rk3528/get_tts_silero.sh
+# (его вызывает install.sh), он же показывает скорость синтеза на этой машине.
 #
 # Лицензия русских моделей Silero — CC BY-NC 4.0: для дома можно, для продажи — нет.
 
@@ -37,7 +36,7 @@ def start(core: VACore):
             "modelId": "v5_5_ru",
             "speaker": "xenia",
             "sampleRate": 24000,    # 8000 / 24000 / 48000; клиентам всё равно уходит 22 050 Гц — 24000 хватает
-            "threads": 2,           # ядер на синтез: два оставляем распознаванию речи и Home Assistant
+            "threads": max(1, min(3, (os.cpu_count() or 2) - 1)),   # ядер на синтез: одно — распознаванию и музыке
             "putAccent": True,      # ударения
             "putYo": True,          # буква «ё»
             "homographs": True,     # омографы («замок» / «замок») — v5

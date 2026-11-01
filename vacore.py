@@ -109,23 +109,17 @@ class VACore(JaaCore):
                 self.print_error(f"Ошибка инициализации нормализатора {self.normalization_engine}", e)
                 self.normalization_engine = "none"
 
+        if self.ttsEngineId not in self.ttss and "silero" in self.ttss:
+            # прежние настройки ("vosk"): vosk-tts больше нет, голос — Silero
+            logger.warning(f"Движка озвучки «{self.ttsEngineId}» нет — использую Silero")
+            self.ttsEngineId = "silero"
         try:
             self.ttss[self.ttsEngineId][0](self)
         except Exception as e:
-            if self.ttsEngineId != "vosk" and "vosk" in self.ttss:
-                # например, Silero без PyTorch или без модели — говорим прежним голосом, а не молчим
-                self.print_error(f"Ошибка инициализации озвучки {self.ttsEngineId} — переключаюсь на vosk-tts", e)
-                self.ttsEngineId = "vosk"
-                try:
-                    self.ttss["vosk"][0](self)
-                    return self._init_fuzzy()
-                except Exception as e2:
-                    e = e2
-            self.print_error("Ошибка инициализации озвучки (ttsEngineId) — ответы будут только текстом", e)
+            self.print_error("Ошибка инициализации озвучки — ответы будут только текстом. "
+                             "Голос Silero ставится так: bash scripts/rk3528/get_tts_silero.sh", e)
             self.ttsEngineId = "console"
-        self._init_fuzzy()
 
-    def _init_fuzzy(self):
         for name, (init, _) in self.fuzzy_processors.items():
             try:
                 init(self)
