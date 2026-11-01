@@ -207,10 +207,22 @@ class VACore(JaaCore):
             if command in keyall.split("|"):
                 return keyall, 1.0, ""
         if allow_rest_phrase:
+            # самое длинное совпадающее начало: «играй больше меньше» важнее, чем «играй»
+            best = None
             for keyall in context:
                 for key in keyall.split("|"):
-                    if command.startswith(key + " "):
-                        return keyall, 1.0, command[len(key) + 1:]
+                    if command.startswith(key + " ") and (best is None or len(key) > len(best[1])):
+                        best = (keyall, key)
+            if best is not None:
+                rest = command[len(best[1]) + 1:]
+                # «включи мою вону»: точное начало «включи», но нечётко почти точно подходит более длинная
+                # команда «включи мою волну» — берём её
+                for name, (_, process) in self.fuzzy_processors.items():
+                    res = process(self, command, context, allow_rest_phrase)
+                    if res is not None and res[1] >= 0.93 and len(res[2]) < len(rest):
+                        logger.info(f"Fuzzy {name}: «{command}» -> {res[0]} вместо «{best[1]}»")
+                        return res
+                return best[0], 1.0, rest
         if threshold is None:
             threshold = self.plugin_options("core")["fuzzyThreshold"]
         for name, (_, process) in self.fuzzy_processors.items():

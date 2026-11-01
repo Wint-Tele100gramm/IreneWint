@@ -31,6 +31,7 @@
 | `plugin_audio_sources` | «режим сопряжения», «блютуз на кухне» — звук с телефона (Bluetooth, DLNA) по комнатам (Linux) |
 | `plugin_greetings`, `plugin_random`, `plugin_gamemoreless`, `plugin_voiceover` | «привет», «подбрось монетку», игра «больше-меньше», «скажи …» |
 | `plugin_tts_silero`, `plugin_tts_console` | голос Silero; текст в консоль, если голос не загрузился |
+| `plugin_fuzzy` | нечёткое сравнение команд: «вкличи свет», «какая пагода», «включи мою вону» — находит ближайшую команду (настройки: `options/plugin_fuzzy.json`, порог `threshold`) |
 | `plugin_playwav_aplay`, `plugin_playwav_sounddevice` | проигрывание на Linux / Windows |
 | `plugin_normalizer_prepare` | числа, латиница и символы — в слова для озвучки |
 
