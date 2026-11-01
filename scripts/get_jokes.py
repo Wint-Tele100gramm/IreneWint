@@ -17,6 +17,7 @@
     .venv/bin/python scripts/get_jokes.py --normal 5000 --adult 2000
     .venv/bin/python scripts/get_jokes.py --source rzhunemogu --normal 500 --adult 300
     .venv/bin/python scripts/get_jokes.py --source all        # оба источника вместе
+    .venv/bin/python scripts/get_jokes.py --file data/anekdots.json   # файл, скачанный вручную
 """
 
 import argparse
@@ -190,6 +191,92 @@ def from_rzhunemogu(pools, want):
         print()
 
 
+# ---------------------------------------------------------------- свой файл (скачанный вручную)
+def _iter_json_rows(path):
+    """Строки из JSON-массива [{...}, ...] или JSON Lines — потоком, без загрузки всего файла в память
+    (файл датасета ~250 МБ, а у приставки 1 ГБ ОЗУ)."""
+    import gzip
+    opener = gzip.open if path.endswith(".gz") else open
+    dec = json.JSONDecoder()
+    with opener(path, "rt", encoding="utf-8-sig") as f:
+        buf = f.read(1 << 20)
+        pos = len(buf) - len(buf.lstrip())
+        if buf[pos:pos + 1] == "[":
+            pos += 1
+        while True:
+            # пропустить пробелы и запятые между элементами
+            while True:
+                while pos < len(buf) and buf[pos] in " \t\r\n,":
+                    pos += 1
+                if pos < len(buf):
+                    break
+                more = f.read(1 << 20)
+                if not more:
+                    return
+                buf, pos = more, 0
+            if buf[pos] == "]":
+                return
+            while True:
+                try:
+                    obj, end = dec.raw_decode(buf, pos)
+                    break
+                except json.JSONDecodeError:
+                    more = f.read(1 << 20)
+                    if not more:
+                        raise
+                    buf = buf[pos:] + more
+                    pos = 0
+            pos = end
+            if isinstance(obj, dict) and isinstance(obj.get("rows"), list) and "text" not in obj:
+                yield from obj["rows"]          # {"rows": [...]} — ответ datasets-server
+            else:
+                yield obj
+            if pos > (1 << 20):
+                buf, pos = buf[pos:], 0
+
+
+def from_file(path, pools, want):
+    """Взять из файла лучшие по оценке анекдоты (поле total_mark; нет его — upvote; нет и его — по порядку)."""
+    import heapq
+    print(f"==> Файл {path}")
+    heaps = {"normal": [], "adult": []}
+    keys = set()
+    n = 0
+    for n, row in enumerate(_iter_json_rows(path), 1):
+        if isinstance(row, dict):
+            row = row.get("row", row)
+            text = row.get("text") or row.get("content") or row.get("joke") or ""
+            mark = row.get("total_mark", row.get("upvote", row.get("rating")))
+        else:
+            text, mark = str(row), None
+        try:
+            mark = float(mark) if mark is not None else -n          # без оценок — в порядке файла
+        except (TypeError, ValueError):
+            mark = -n
+        text = clean(str(text))
+        kind = classify(text)
+        if kind is None:
+            continue
+        k = key_of(text)
+        if k in keys:
+            continue
+        h = heaps[kind]
+        if len(h) < want[kind]:
+            heapq.heappush(h, (mark, k, text))
+            keys.add(k)
+        elif mark > h[0][0]:
+            heapq.heapreplace(h, (mark, k, text))
+            keys.add(k)
+        if n % 20000 == 0:
+            print(f"\r   просмотрено {n}", end="", flush=True)
+    print(f"\r   просмотрено {n}")
+    for kind in ("normal", "adult"):
+        for _, k, text in sorted(heaps[kind], reverse=True):
+            if k not in _seen and len(pools[kind]) < want[kind]:
+                _seen.add(k)
+                pools[kind].append(text)
+
+
 _seen = set()
 
 
@@ -210,23 +297,32 @@ def main():
     ap.add_argument("--normal", type=int, default=3000, help="сколько обычных анекдотов")
     ap.add_argument("--adult", type=int, default=1500, help="сколько пошлых анекдотов")
     ap.add_argument("--max-rows", type=int, default=40000, help="сколько строк датасета просмотреть, не больше")
+    ap.add_argument("--file", help="взять анекдоты из скачанного вручную файла (JSON / JSON Lines, можно .gz), "
+                                   "например anekdots.json с Hugging Face")
     ap.add_argument("--out", default=OUT)
     a = ap.parse_args()
 
     pools = {"normal": [], "adult": []}
     want = {"normal": a.normal, "adult": a.adult}
     sources = []
-    if a.source in ("hf", "all"):
+    if a.file:
+        if not os.path.isfile(a.file):
+            print(f"!! Нет файла {a.file}")
+            return 1
+        from_file(a.file, pools, want)
+        sources.append(f"файл {os.path.basename(a.file)} (igorktech/anekdots, ODC-BY, тексты с anekdot.ru)")
+    elif a.source in ("hf", "all"):
         from_hf(pools, want, a.max_rows)
         sources.append("Hugging Face igorktech/anekdots (ODC-BY, тексты с anekdot.ru)")
-    if a.source in ("rzhunemogu", "all") or (a.source == "hf" and not pools["normal"]):
+    if not a.file and (a.source in ("rzhunemogu", "all") or (a.source == "hf" and not pools["normal"])):
         if a.source == "hf":
             print("   с Hugging Face ничего не пришло — пробую rzhunemogu.ru")
             want = {"normal": min(a.normal, 500), "adult": min(a.adult, 300)}
         from_rzhunemogu(pools, want)
         sources.append("rzhunemogu.ru")
     if not pools["normal"] and not pools["adult"]:
-        print("!! Ничего не скачалось: проверьте интернет на приставке")
+        print("!! Ничего не набралось: " + ("в файле нет подходящих анекдотов (нужно поле text)" if a.file
+                                            else "проверьте интернет на приставке"))
         return 1
     os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
     data = {"generated": datetime.datetime.now().isoformat(timespec="seconds"), "sources": sources,
