@@ -108,6 +108,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--threads", type=int, nargs="+", default=None)
     ap.add_argument("--no-vosk", action="store_true")
+    ap.add_argument("--only", choices=["silero", "vosk"], help=argparse.SUPPRESS)
     args = ap.parse_args()
     os.makedirs("temp", exist_ok=True)
     threads = args.threads
@@ -116,10 +117,16 @@ def main():
             threads = [int(json.load(open("options/plugin_tts_silero.json")).get("threads", 2))]
         except (OSError, ValueError):
             threads = [2]
-    bench_silero(threads)
+    if args.only == "silero":
+        return bench_silero(threads)
+    if args.only == "vosk":
+        return bench_vosk()
+    # каждый движок — в отдельном процессе: две модели сразу на приставке с 1 ГБ не помещаются в память
+    import subprocess
+    subprocess.run([sys.executable, __file__, "--only", "silero", "--threads", *map(str, threads)])
     if not args.no_vosk:
         print()
-        bench_vosk()
+        subprocess.run([sys.executable, __file__, "--only", "vosk"])
 
 
 if __name__ == "__main__":
