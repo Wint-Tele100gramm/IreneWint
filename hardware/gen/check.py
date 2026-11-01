@@ -126,7 +126,10 @@ def connectivity(parts, tracks, vias, nets):
     return bad
 
 
-def clearances(parts, tracks, vias, min_gap=0.19):
+PAD_GAP = 0.19   # дорожка — вывод (у TSSOP шаг 0,65 мм)
+
+
+def clearances(parts, tracks, vias, min_gap=0.29):
     """Нарушения зазора дорожка-площадка, дорожка-дорожка, переход-всё между разными цепями."""
     errs = []
     pads = [pd for p in parts for pd in p.pads if not pd.npth]
@@ -158,7 +161,7 @@ def clearances(parts, tracks, vias, min_gap=0.19):
             if not (bx1 < pd.x < bx2 and by1 < pd.y < by2):
                 continue
             g = pad_dist(pd, x1, y1, x2, y2) - t["w"] / 2
-            if g < min_gap:
+            if g < min(min_gap, PAD_GAP):
                 errs.append(("track-pad", t["net"], f"{pd.ref}.{pd.num}", round(g, 3), (round(x1, 2), round(y1, 2))))
     for i, a in enumerate(tracks):
         for b in tracks[i + 1:]:
@@ -178,6 +181,6 @@ def clearances(parts, tracks, vias, min_gap=0.19):
             if pd.net == v["net"]:
                 continue
             g = pad_dist(pd, v["x"], v["y"], v["x"], v["y"]) - v["d"] / 2
-            if g < min_gap:
+            if g < min(min_gap, PAD_GAP):
                 errs.append(("via-pad", v["net"], f"{pd.ref}.{pd.num}", round(g, 3), (v["x"], v["y"])))
     return errs

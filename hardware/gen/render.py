@@ -133,41 +133,51 @@ def render(parts, tracks, vias, path, side="F", ratsnest=None, pour=None, labels
     return path
 
 
-def render_assembly(parts, path):
-    """Сборочный чертёж: контуры деталей, позиционные обозначения и номиналы — для ручной пайки."""
-    s = 2
+def render_assembly(parts, path, side="F"):
+    """Сборочный чертёж одной стороны: контуры, обозначения, номиналы, первый вывод. Низ — как видно снизу (зеркально)."""
     global PX
     old = PX
-    PX = 20 * s
+    PX = 40
+    mine = [p for p in parts if (p.side if p.smd else side) == side or p.sym == "MH"]
     img = Image.new("RGB", (int((W + 2 * M) * PX), int((H + 2 * M) * PX)), (255, 255, 255))
     d = ImageDraw.Draw(img)
     outline(d, (0, 0, 0), 3)
-    for p in parts:
+    for p in mine:
         for pad in p.pads:
-            if not pad.npth:
+            if not pad.npth and side in pad.layers:
                 draw_pad(d, pad, (225, 225, 225))
+            elif pad.npth:
+                rr = pad.w / 2
+                d.ellipse([*P(pad.x - rr, pad.y - rr), *P(pad.x + rr, pad.y + rr)], outline=(0, 0, 0), width=2)
         for it in p.fab or p.silk:
             if it[0] == "line":
                 d.line([P(it[1], it[2]), P(it[3], it[4])], fill=(90, 90, 90), width=2)
             else:
                 _, cx, cy, rr, w = it
                 d.ellipse([*P(cx - rr, cy - rr), *P(cx + rr, cy + rr)], outline=(90, 90, 90), width=2)
-        # первый вывод
         p1 = next((pd for pd in p.pads if pd.num == "1"), None)
-        if p1 and len(p.pads) > 2:
+        if p1 and (len(p.pads) > 2 or p.sym in ("LED", "D", "TVS", "CP")):
             rr = 0.35
             d.ellipse([*P(p1.x - rr, p1.y - rr), *P(p1.x + rr, p1.y + rr)], fill=(220, 0, 0))
+    if side == "B":
+        img = img.transpose(Image.FLIP_LEFT_RIGHT)
+        d = ImageDraw.Draw(img)
+
+    def X(x):
+        return W - x if side == "B" else x
     fr = _font(int(0.95 * PX))
+    fs = _font(int(0.75 * PX))
     fv = _font(int(0.62 * PX))
-    for p in parts:
-        if not p.court:
+    for p in mine:
+        if not p.court or p.sym == "MH":
             continue
-        cx = (p.court[0] + p.court[2]) / 2
+        cx = X((p.court[0] + p.court[2]) / 2)
         cy = (p.court[1] + p.court[3]) / 2
-        small = (p.court[2] - p.court[0]) < 4
-        d.text(P(cx, cy - (0.35 if small else 0.6)), p.ref, fill=(0, 0, 160), font=fr if not small else _font(int(0.75 * PX)), anchor="mm")
-        if p.sym not in ("MH",):
-            d.text(P(cx, cy + (0.45 if small else 0.7)), p.value, fill=(150, 40, 0), font=fv, anchor="mm")
+        small = (p.court[2] - p.court[0]) < 4 or (p.court[3] - p.court[1]) < 2.2
+        d.text(P(cx, cy - (0.35 if small else 0.6)), p.ref, fill=(0, 0, 160), font=fs if small else fr, anchor="mm")
+        d.text(P(cx, cy + (0.45 if small else 0.7)), p.value, fill=(150, 40, 0), font=fv, anchor="mm")
+    d.text(P(W / 2, -1.5), "ВЕРХ (вид сверху)" if side == "F" else "НИЗ (вид снизу, зеркально)", fill=(0, 0, 0),
+           font=fr, anchor="mm")
     img.save(path)
     PX = old
     return path

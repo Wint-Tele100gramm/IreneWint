@@ -160,7 +160,7 @@ def picture(files, path, side="F"):
     """Картинка слоя из Gerber, как на заводе: маска зелёная, медь под маской темнее, открытая медь — золото, шелкография."""
     cu = render_gerber(files[f"{side}_Cu"])
     mask = render_gerber(files[f"{side}_Mask"])
-    silk = render_gerber(files[f"{side}_Silk"]) if side == "F" else np.zeros_like(cu)
+    silk = render_gerber(files[f"{side}_Silk"])
     edge = render_gerber(files["Edge"])
     filled = ndimage.binary_fill_holes(ndimage.binary_dilation(edge, iterations=2))
     img = np.zeros(cu.shape + (3,), dtype=np.uint8)

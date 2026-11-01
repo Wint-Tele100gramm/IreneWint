@@ -7,8 +7,9 @@ import subprocess
 from placement import W, H, ANTENNA_KEEPOUT
 from design import POWER_NETS, SUPPLY_NETS
 
-CLEARANCE = 0.2
-WIDTH = {"default": 0.25, "supply": 0.4, "power": 0.6}
+CLEARANCE = 0.3   # зазор между проводниками (по просьбе: 0,3–0,5 мм)
+WIDTH = {"default": 0.25, "supply": 0.3, "power": 0.6}
+PAD_CLEARANCE = 0.2   # от дорожки до вывода микросхемы: у TSSOP шаг 0,65 мм, больше не войти
 VIAS = {"default": (0.6, 0.3), "supply": (0.6, 0.3), "power": (0.8, 0.4)}
 SPEAKER = {"OUTL_P", "OUTL_N", "OUTR_P", "OUTR_N", "SPK_LP", "SPK_LN", "SPK_RP", "SPK_RN"}
 
@@ -113,7 +114,7 @@ def write_dsn(parts, path):
     for c, nets in classes.items():
         w = WIDTH[c]
         cls_txt.append(f"    (class {c} " + " ".join(q(n) for n in nets) +
-                       f"\n      (circuit (use_via {q(via_name(c))}))\n      (rule (width {um(w)}) (clearance {um(CLEARANCE)}))\n    )")
+                       f"\n      (circuit (use_via {q(via_name(c))}))\n      (rule (width {um(w)}))\n    )")
     out = f"""(pcb {q(os.path.basename(path))}
   (parser (string_quote ") (space_in_quoted_tokens on) (host_cad "KiCad's Pcbnew") (host_version "7.0"))
   (resolution um 10)
@@ -125,7 +126,7 @@ def write_dsn(parts, path):
     (keepout "antenna" (polygon signal 0 {X(kx1)} {Y(ky1)} {X(kx2)} {Y(ky1)} {X(kx2)} {Y(ky2)} {X(kx1)} {Y(ky2)}))
     (plane "GND" (polygon B.Cu 0 {' '.join(X(x) + ' ' + Y(y) for x, y in inset)}))
     (via {' '.join(q(v) for v in vias)})
-    (rule (width {um(WIDTH['default'])}) (clearance {um(CLEARANCE)}) (clearance {um(CLEARANCE)} (type default_smd)) (clearance 50 (type smd_smd)))
+    (rule (width {um(WIDTH['default'])}) (clearance {um(CLEARANCE)}) (clearance {um(PAD_CLEARANCE)} (type default_smd)) (clearance 100 (type smd_smd)))
   )
   (placement
 {chr(10).join(placement)}
@@ -199,7 +200,7 @@ def read_ses(path):
     return tracks, vias
 
 
-def gnd_fanout(parts, tracks, vias, pad_ids, via=(0.6, 0.3), width=0.3, gap=0.22):
+def gnd_fanout(parts, tracks, vias, pad_ids, via=(0.6, 0.3), width=0.3, gap=0.3):
     """Короткая дорожка от вывода земли к новому переходному отверстию на сплошную землю нижнего слоя.
     Для выводов, которые трассировщик оставил без связи (pad_ids — «REF.номер»)."""
     import math

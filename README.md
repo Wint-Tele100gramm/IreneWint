@@ -14,7 +14,7 @@
 | Веб-интерфейс | `web_ui.py`, `web/index.html` | Комнаты, команды, сценарии, настройки, журнал — `http://<IP сервера>:8765/` |
 | Ядро | `vacore.py`, `jaa.py` | Плагины, команды, диалоги, таймеры, озвучка |
 | Клиент комнаты | `esp32_client/` | Прошивка ESP32 / ESP32-S3 (Arduino IDE) |
-| Плата клиента | `hardware/irene-client/` | Gerber, схема и перечень элементов: ESP32-S3 + PCM5102A + PAM8403 + 2 микрофона на одной плате |
+| Плата клиента | `hardware/irene-client/` | Проект KiCad, Gerber, схема и перечень элементов: ESP32-S3 + PCM5102A + PAM8403 + 2 микрофона на одной плате 50×42 мм |
 | Мультирум | `utils/multiroom.py`, `scripts/rk3528/snapserver.conf` | Snapcast: две линии музыки, какая комната что слушает |
 | Установка | `scripts/rk3528/install.sh`, `install_windows.bat` | Приставка / Windows |
 

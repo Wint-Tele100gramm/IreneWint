@@ -1,0 +1,11 @@
+(version 1)
+
+# Между дорожками и переходами — не меньше 0.3 мм; от дорожки до вывода микросхемы — 0.2 мм
+# (у PCM5102A шаг выводов 0,65 мм, с большим зазором к ним не подойти).
+(rule "track_to_track"
+  (constraint clearance (min 0.3mm))
+  (condition "A.Type == 'Track' && B.Type == 'Track'"))
+
+(rule "via_to_track"
+  (constraint clearance (min 0.3mm))
+  (condition "A.Type == 'Via' && (B.Type == 'Track' || B.Type == 'Via')"))

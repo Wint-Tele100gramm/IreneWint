@@ -11,14 +11,14 @@ from scipy import ndimage
 
 from placement import W, H, CORNER_R, ANTENNA_KEEPOUT
 
-POUR_CLEAR = 0.3        # зазор заливки до чужих цепей
+POUR_CLEAR = 0.4        # зазор заливки до чужих цепей
 EDGE_CLEAR = 0.4        # от края платы
 MASK_EXP = 0.05         # расширение окон маски
 MIN_POUR = 0.25         # минимальная ширина заливки
 THERMAL_W = 0.5         # ширина перемычек термобарьера у выводов в отверстиях
-STITCH_STEP = 5.0       # шаг сшивающих переходных отверстий
+STITCH_STEP = 8.0       # шаг сшивающих переходных отверстий
 STITCH_VIA = (0.6, 0.3)
-RES = 20                # пикселей на мм для анализа заливки
+RES = 40                # пикселей на мм для анализа заливки
 
 
 def fmt(v):
@@ -375,28 +375,55 @@ def build_pours(parts, tracks, vias):
     return result
 
 
-def _runs_to_rects(mask):
-    """Маска -> прямоугольники (мм), склеивая одинаковые отрезки соседних строк."""
-    rects = []
-    open_runs = {}
-    hgt = mask.shape[0]
-    for y in range(hgt + 1):
-        runs = set()
-        if y < hgt:
-            row = mask[y]
-            if row.any():
-                d = np.diff(np.concatenate(([0], row.astype(np.int8), [0])))
-                starts = np.nonzero(d == 1)[0]
-                ends = np.nonzero(d == -1)[0]
-                runs = set(zip(starts.tolist(), ends.tolist()))
-        for r in list(open_runs):
-            if r not in runs:
-                y0 = open_runs.pop(r)
-                rects.append((r[0] / RES, y0 / RES, r[1] / RES, y / RES))
-        for r in runs:
-            if r not in open_runs:
-                open_runs[r] = y
-    return rects
+def _simplify(pts, tol):
+    """Дуглас–Пекер для замкнутого контура."""
+    if len(pts) < 8:
+        return pts
+    pts = np.asarray(pts)
+
+    def rdp(a):
+        if len(a) < 3:
+            return a
+        p0, p1 = a[0], a[-1]
+        d = p1 - p0
+        L = math.hypot(*d)
+        if L < 1e-12:
+            dist = np.hypot(*(a - p0).T)
+        else:
+            dist = np.abs(d[0] * (a[:, 1] - p0[1]) - d[1] * (a[:, 0] - p0[0])) / L
+        i = int(np.argmax(dist))
+        if dist[i] > tol:
+            return np.vstack([rdp(a[:i + 1])[:-1], rdp(a[i:])])
+        return np.vstack([p0, p1])
+    half = len(pts) // 2
+    out = np.vstack([rdp(pts[:half + 1])[:-1], rdp(np.vstack([pts[half:], pts[:1]]))[:-1]])
+    return [tuple(p) for p in out]
+
+
+def pour_polygons(mask):
+    """Растровая маска заливки -> векторные многоугольники [(внешний контур, [дырки])], мм, от больших к меньшим."""
+    from contourpy import contour_generator, FillType
+    z = np.pad(mask.astype(float), 1)
+    gen = contour_generator(z=z, fill_type=FillType.OuterOffset)
+    polys = []
+    pts_list, offs_list = gen.filled(0.5, 1.5)
+    for pts, offs in zip(pts_list, offs_list):
+        rings = []
+        for i in range(len(offs) - 1):
+            ring = pts[offs[i]:offs[i + 1]]
+            ring = [((x - 1) / RES + 0.5 / RES, (y - 1) / RES + 0.5 / RES) for x, y in ring]
+            ring = _simplify(ring[:-1] if ring[0] == ring[-1] else ring, 0.3 / RES)
+            if len(ring) >= 3:
+                rings.append(ring)
+        if not rings:
+            continue
+        outer, holes = rings[0], rings[1:]
+        area = abs(sum(x1 * y2 - x2 * y1 for (x1, y1), (x2, y2) in zip(outer, outer[1:] + outer[:1]))) / 2
+        if area < MIN_POUR * MIN_POUR * 4:
+            continue
+        polys.append((area, outer, holes))
+    polys.sort(key=lambda p: -p[0])
+    return [(o, h) for _, o, h in polys]
 
 
 # ---------------------------------------------------------------- шрифт для шелкографии
@@ -447,7 +474,7 @@ GLYPHS = {
 }
 
 
-def text_strokes(text, x, y, h, center=False):
+def text_strokes(text, x, y, h, center=False, mirror=False):
     """Строка шрифтом-штрихами: (x, y) — левый край по середине высоты (или центр при center). -> [(x1,y1,x2,y2,w)]"""
     s = h / 6.0
     adv = 5.2 * s
@@ -458,6 +485,8 @@ def text_strokes(text, x, y, h, center=False):
     for i, ch in enumerate(text.upper()):
         for stroke in GLYPHS.get(ch, []):
             pts = [(x0 + i * adv + px * s, y + h / 2 - py * s) for px, py in stroke]
+            if mirror:   # надпись на нижней стороне читается снизу
+                pts = [(2 * x0 + width - px, py) for px, py in pts]
             for (a, b), (c, d) in zip(pts, pts[1:]):
                 out.append((a, b, c, d, w))
     return out
@@ -468,34 +497,16 @@ def text_strokes(text, x, y, h, center=False):
 def copper_layer(side, parts, tracks, vias, pours):
     g = Gerber(f"Copper,L{1 if side == 'F' else 2},{'Top' if side == 'F' else 'Bot'}")
     P = pours["pours"][side]
-    # 1) сплошная заливка
-    g.region(board_outline_pts(EDGE_CLEAR))
-    # 2) вырезы
-    g.lp(False)
-    kx1, ky1, kx2, ky2 = ANTENNA_KEEPOUT
-    g.region([(kx1, ky1), (kx2, ky1), (kx2, ky2), (kx1, ky2)])
-    for p in parts:
-        for pad in p.pads:
-            if pad.npth:
-                g.ap("C", pad.w + 0.5)
-                g.flash(pad.x, pad.y)
-                continue
-            if side not in pad.layers:
-                continue
-            if pad.net != "GND" or pad.drill:
-                draw_pad(g, pad, POUR_CLEAR)
-    for t in tracks:
-        if t["layer"] == side and t["net"] != "GND":
-            g.ap("C", t["w"] + 2 * POUR_CLEAR)
-            g.line(*t["pts"])
-    for v in vias:
-        if v["net"] != "GND":
-            g.ap("C", v["d"] + 2 * POUR_CLEAR)
-            g.flash(v["x"], v["y"])
-    for x1, y1, x2, y2 in _runs_to_rects(pours["remove"][side]):
-        g.region([(x1, y1), (x2, y1), (x2, y2), (x1, y2)])
-    # 3) проводники, площадки, термобарьеры
+    # 1) заливка земли: готовые многоугольники (зазоры, полоски и острова уже учтены)
+    for outer, holes in pour_polygons(pours["pours"][side + "_keep"]):
+        g.lp(True)
+        g.region(outer)
+        if holes:
+            g.lp(False)
+            for h in holes:
+                g.region(h)
     g.lp(True)
+    # 2) проводники, площадки, термобарьеры
     for pad in P.thermals:
         g.ap("C", THERMAL_W)
         for seg in P.spokes[id(pad)]:
@@ -528,30 +539,30 @@ def mask_layer(side, parts):
 
 def paste_layer(side, parts):
     g = Gerber(f"Paste,{'Top' if side == 'F' else 'Bot'}")
-    if side == "F":
-        for p in parts:
-            for pad in p.pads:
-                if not pad.drill and not pad.npth and "F" in pad.layers and len(pad.layers) == 1:
-                    draw_pad(g, pad)
+    for p in parts:
+        for pad in p.pads:
+            if not pad.drill and not pad.npth and pad.layers == {side}:
+                draw_pad(g, pad)
     return g.text()
 
 
 def silk_layer(side, parts, extra_strokes):
     g = Gerber(f"Legend,{'Top' if side == 'F' else 'Bot'}")
-    if side == "F":
-        for p in parts:
-            for it in p.silk:
-                if it[0] == "line":
-                    g.ap("C", max(it[5], 0.12))
-                    g.line(it[1], it[2], it[3], it[4])
-                else:
-                    _, cx, cy, r, w = it
-                    g.ap("C", max(w, 0.12))
-                    pts = [(cx + r * math.cos(2 * math.pi * i / 48), cy + r * math.sin(2 * math.pi * i / 48)) for i in range(49)]
-                    g.polyline(pts)
-        for x1, y1, x2, y2, w in extra_strokes:
-            g.ap("C", w)
-            g.line(x1, y1, x2, y2)
+    for p in parts:
+        if (p.side if p.smd else "F") != side:
+            continue
+        for it in p.silk:
+            if it[0] == "line":
+                g.ap("C", max(it[5], 0.15))
+                g.line(it[1], it[2], it[3], it[4])
+            else:
+                _, cx, cy, r, w = it
+                g.ap("C", max(w, 0.15))
+                pts = [(cx + r * math.cos(2 * math.pi * i / 48), cy + r * math.sin(2 * math.pi * i / 48)) for i in range(49)]
+                g.polyline(pts)
+    for x1, y1, x2, y2, w in extra_strokes:
+        g.ap("C", w)
+        g.line(x1, y1, x2, y2)
     return g.text()
 
 

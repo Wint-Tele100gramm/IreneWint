@@ -40,7 +40,9 @@ class Pad:
 class Part:
     def __init__(self, ref, sym, value, fpkey, pins, descr):
         self.ref, self.sym, self.value, self.fpkey, self.pins, self.descr = ref, sym, value, fpkey, pins, descr
-        self.x, self.y, self.rot = PCB_POS[ref]
+        pos = PCB_POS[ref]
+        self.x, self.y, self.rot = pos[:3]
+        self.side = pos[3] if len(pos) > 3 else "F"   # "B" — деталь на нижней стороне (зеркально)
         self.pads = []
         self.silk = []      # [("line", x1, y1, x2, y2, w) | ("circle", cx, cy, r, w)]
         self.fab = []
@@ -59,6 +61,14 @@ def load_parts():
     for ref, sym, value, fpkey, pins, descr in PARTS:
         p = Part(ref, sym, value, fpkey, pins, descr)
         fp = Footprint.from_file(fp_path(fpkey))
+        p.fp = fp
+        bot = p.side == "B"
+
+        def L(x, y):
+            return (x, -y) if bot else (x, y)
+
+        def R(x, y, deg):
+            return rot(*L(x, y), deg)
         pinmap = {str(k): v for k, v in pins.items()}
         seen = {}
         for pd in fp.pads:
@@ -71,19 +81,19 @@ def load_parts():
             pad.pin_name = num if k == 0 else f"{num}@{k}"
             pad.net = pinmap.get(num) if num else None
             pad.npth = pd.type == "np_thru_hole"
-            ang = _norm_angle((pd.position.angle or 0) + p.rot)
+            ang = _norm_angle((-(pd.position.angle or 0) if bot else (pd.position.angle or 0)) + p.rot)
             w, h = pd.size.X, pd.size.Y
             if round(ang / 90) % 2 == 1:
                 w, h = h, w
             if abs(ang / 90 - round(ang / 90)) > 1e-6:
                 raise ValueError(f"{ref}.{num}: поворот площадки {ang} не кратен 90°")
-            dx, dy = rot(pd.position.X, pd.position.Y, p.rot)
+            dx, dy = R(pd.position.X, pd.position.Y, p.rot)
             pad.x, pad.y = p.x + dx, p.y + dy
             pad.w, pad.h = w, h
             pad.shape = pd.shape
             pad.rr = (pd.roundrectRatio or 0.25) if pd.shape == "roundrect" else 0
             if pd.type == "smd":
-                pad.layers = {"F"}
+                pad.layers = {p.side}
             else:
                 pad.layers = {"F", "B"}
                 p.smd = False
@@ -112,27 +122,27 @@ def load_parts():
                 width = g.stroke.width
             width = width or 0.12
             if t == "FpLine":
-                a = rot(g.start.X, g.start.Y, p.rot)
-                b = rot(g.end.X, g.end.Y, p.rot)
+                a = R(g.start.X, g.start.Y, p.rot)
+                b = R(g.end.X, g.end.Y, p.rot)
                 item = ("line", p.x + a[0], p.y + a[1], p.x + b[0], p.y + b[1], width)
                 if layer == "F.CrtYd":
                     xs += [item[1], item[3]]
                     ys += [item[2], item[4]]
             elif t == "FpCircle":
-                c = rot(g.center.X, g.center.Y, p.rot)
+                c = R(g.center.X, g.center.Y, p.rot)
                 r = math.hypot(g.end.X - g.center.X, g.end.Y - g.center.Y)
                 item = ("circle", p.x + c[0], p.y + c[1], r, width)
                 if layer == "F.CrtYd":
                     p.court_circle = (item[1], item[2], r)
             elif t == "FpArc" and g.mid is not None:
                 pts = _arc_points((g.start.X, g.start.Y), (g.mid.X, g.mid.Y), (g.end.X, g.end.Y))
-                pts = [rot(x, y, p.rot) for x, y in pts]
+                pts = [R(x, y, p.rot) for x, y in pts]
                 for (x1, y1), (x2, y2) in zip(pts, pts[1:]):
                     item = ("line", p.x + x1, p.y + y1, p.x + x2, p.y + y2, width)
                     (p.silk if layer == "F.SilkS" else p.fab if layer == "F.Fab" else []).append(item)
                 continue
             elif t == "FpPoly":
-                pts = [rot(c.X, c.Y, p.rot) for c in g.coordinates]
+                pts = [R(c.X, c.Y, p.rot) for c in g.coordinates]
                 for (x1, y1), (x2, y2) in zip(pts, pts[1:] + pts[:1]):
                     item = ("line", p.x + x1, p.y + y1, p.x + x2, p.y + y2, width)
                     (p.silk if layer == "F.SilkS" else p.fab if layer == "F.Fab" else []).append(item)
@@ -172,12 +182,16 @@ def _arc_points(a, m, b, n=12):
     return [(ux + r * math.cos(a1 + span * i / n), uy + r * math.sin(a1 + span * i / n)) for i in range(n + 1)]
 
 
+def sides(p):
+    return {"F", "B"} if not p.smd or p.sym == "MH" else {p.side}
+
+
 def check_overlaps(parts, margin=0.0):
-    """Пересечения курсов (зон деталей) — список пар."""
+    """Пересечения курсов (зон деталей) на одной стороне — список пар."""
     bad = []
     for i, a in enumerate(parts):
         for b in parts[i + 1:]:
-            if not a.court or not b.court:
+            if not a.court or not b.court or not (sides(a) & sides(b)):
                 continue
             if a.court_circle or b.court_circle:
                 # отверстие: круг против прямоугольника
