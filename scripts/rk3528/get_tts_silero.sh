@@ -38,15 +38,23 @@ if env | grep -qiE '^(all|https?)_proxy=socks' && \
   PIP=(env -u ALL_PROXY -u all_proxy -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy "${PIP[@]}")
 fi
 
+# Память: PyTorch с моделью занимает 300–500 МБ. На приставке с 1 ГБ вместе с распознаванием речи это слишком много.
+MEM_MB=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)
+if [ "$MEM_MB" -lt 1800 ] && [ "${FORCE:-0}" != 1 ]; then
+  echo "!! На этой приставке ${MEM_MB} МБ памяти — Silero (PyTorch) с распознаванием речи в неё не поместится."
+  echo "   Оставьте vosk-tts. Поставить всё равно: FORCE=1 bash $0"
+  exit 1
+fi
+
 if "$PY" -c "import torch" 2>/dev/null; then
   echo "==> PyTorch уже есть: $("$PY" -c 'import torch; print(torch.__version__)')"
 else
-  echo "==> Ставлю PyTorch (только процессор, около 200 МБ)"
-  if [ "$(uname -m)" = "x86_64" ]; then
-    "${PIP[@]}" install torch --index-url https://download.pytorch.org/whl/cpu
-  else
-    "${PIP[@]}" install torch          # для aarch64 на PyPI и так сборка без видеокарты
-  fi
+  # Сборка без видеокарты — с сайта PyTorch: на PyPI для aarch64 теперь лежит сборка с CUDA (почти 500 МБ
+  # плюс библиотеки NVIDIA). Временные файлы pip — на диск, а не в /tmp (в Armbian /tmp в памяти, ~450 МБ).
+  echo "==> Ставлю PyTorch (сборка для процессора, около 150–250 МБ)"
+  mkdir -p "$REPO/temp/pip"
+  TMPDIR="$REPO/temp/pip" "${PIP[@]}" install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+  rm -rf "$REPO/temp/pip"
 fi
 
 MODEL="$("$PY" -c "import json; print(json.load(open('$REPO/options/plugin_tts_silero.json')).get('modelId','v5_5_ru'))" 2>/dev/null || echo v5_5_ru)"
