@@ -7,6 +7,8 @@ Wants=pipewire-pulse.service
 Type=simple
 WorkingDirectory=@REPO@
 Environment=PYTHONUNBUFFERED=1
+# меньше «арен» malloc у многопоточных PyTorch и распознавания — заметно меньше занятой, но пустой памяти
+Environment=MALLOC_ARENA_MAX=2
 # Сервер комнат: клиенты ESP32 + (если задан local_room в runva_rooms.json) микрофон самой приставки.
 ExecStart=@REPO@/.venv/bin/python runva_rooms.py
 RestartForceExitStatus=3

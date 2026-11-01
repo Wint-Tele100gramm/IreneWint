@@ -247,7 +247,9 @@ fi
 echo "==> Сервис Ирины"
 sed "$UNIT_SED" "$SCRIPTS/irene.service" > ~/.config/systemd/user/irene.service
 if [ $LITE = 1 ]; then
-  sed -i 's/^MemoryHigh=.*/MemoryHigh=650M/; s/^MemoryMax=.*/MemoryMax=800M/' ~/.config/systemd/user/irene.service
+  # 1 ГБ: голос Silero (~450 МБ) + распознавание + mpv — около 700 МБ. Ниже MemoryHigh ядро постоянно выдавливает
+  # Ирину в подкачку и притормаживает её на каждом выделении памяти (заметно как паузы в ответах).
+  sed -i 's/^MemoryHigh=.*/MemoryHigh=780M/; s/^MemoryMax=.*/MemoryMax=870M/' ~/.config/systemd/user/irene.service
 fi
 chmod +x "$SCRIPTS"/*.sh
 systemctl --user daemon-reload
