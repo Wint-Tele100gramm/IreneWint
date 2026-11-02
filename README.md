@@ -117,8 +117,8 @@ Python должен быть собран с `ssl`, `ctypes`, `sqlite3` — ск
 Hugging Face помечает этот датасет как «Not-For-All-Audiences» и без входа в аккаунт может его не отдать.
 Тогда скачайте файл вручную (на странице датасета нажмите «View content», вкладка «Files», файл `anekdots.json`
 или parquet-файл, сконвертированный в JSON), положите его на приставку, например в `data/anekdots.json`,
-и запустите `.venv/bin/python scripts/get_jokes.py --file data/anekdots.json`. Подходят JSON-массив, JSON Lines
-и `.gz`; файл читается потоком, памяти нужно ~50 МБ.
+и запустите `.venv/bin/python scripts/get_jokes.py --file data/anekdots.json`. Подходят JSON-массив, JSON Lines,
+«словарь столбцов» (`{'total_mark': [...], 'text': [...]}`, в том числе с кавычками Python) и `.gz`; файл читается потоком, памяти нужно ~50 МБ.
 
 Пошлые можно выключить совсем или только в некоторых комнатах (раздел «Анекдоты» в «Настройках»).
 

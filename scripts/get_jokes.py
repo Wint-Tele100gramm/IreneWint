@@ -235,13 +235,143 @@ def _iter_json_rows(path):
                 buf, pos = buf[pos:], 0
 
 
-def from_file(path, pools, want):
-    """Взять из файла лучшие по оценке анекдоты (поле total_mark; нет его — upvote; нет и его — по порядку)."""
-    import heapq
-    print(f"==> Файл {path}")
-    heaps = {"normal": [], "adult": []}
-    keys = set()
-    n = 0
+class _Scan:
+    """Посимвольное чтение большого файла кусками по 1 МБ."""
+
+    def __init__(self, f):
+        self.f, self.buf, self.pos = f, "", 0
+
+    def _fill(self):
+        more = self.f.read(1 << 20)
+        if not more:
+            return False
+        self.buf, self.pos = self.buf[self.pos:] + more, 0
+        return True
+
+    def peek(self):
+        while self.pos >= len(self.buf):
+            if not self._fill():
+                return ""
+        return self.buf[self.pos]
+
+    def skip(self, chars=" \t\r\n,"):
+        while self.peek() and self.buf[self.pos] in chars:
+            self.pos += 1
+        return self.peek()
+
+    def expect(self, ch):
+        if self.skip(" \t\r\n") != ch:
+            raise ValueError(f"ожидался «{ch}», а в файле «{self.peek()}»")
+        self.pos += 1
+
+    def token(self):
+        """Строка в кавычках ('...' или "...") или число / None / null / true... -> значение Python."""
+        import ast
+        c = self.peek()
+        if c in "'\"":
+            start, i = self.pos, self.pos + 1
+            while True:
+                j = self.buf.find(c, i)
+                if j < 0:
+                    i = len(self.buf) - start
+                    self.buf, self.pos = self.buf[start:], 0
+                    start = 0
+                    if not self._fill_keep():
+                        raise ValueError("файл оборвался внутри строки")
+                    continue
+                k = j - 1
+                while k > start and self.buf[k] == "\\":
+                    k -= 1
+                if (j - 1 - k) % 2 == 0:            # кавычка не экранирована
+                    raw = self.buf[start:j + 1]
+                    self.pos = j + 1
+                    if "\\" not in raw:
+                        return raw[1:-1]
+                    try:
+                        return ast.literal_eval(raw)
+                    except Exception:
+                        return json.loads('"' + raw[1:-1].replace('"', '\\"') + '"') if c == "'" else json.loads(raw)
+                i = j + 1
+        m = None
+        while True:
+            m = re.compile(r"[^,\]\}\s]*").match(self.buf, self.pos)
+            if m.end() < len(self.buf) or not self._fill_keep():
+                break
+        word = m.group(0)
+        self.pos = m.end()
+        if word in ("None", "null", "NaN", "nan", ""):
+            return None
+        if word in ("True", "true", "False", "false"):
+            return word.lower() == "true"
+        try:
+            return int(word)
+        except ValueError:
+            return float(word)
+
+    def _fill_keep(self):
+        more = self.f.read(1 << 20)
+        if not more:
+            return False
+        self.buf += more
+        return True
+
+
+def _iter_column_rows(path):
+    """Файл-«словарь столбцов»: {'total_mark': [..], 'date': [..], ..., 'text': [..]} — так его сохраняет
+    print(dataset[:]) / str(dict) (кавычки Python) или json.dump того же словаря. Оценки запоминаются
+    (столбец total_mark идёт раньше text), тексты читаются по одному — памяти нужно немного."""
+    import array
+    import gzip
+    opener = gzip.open if path.endswith(".gz") else open
+    marks = None
+    with opener(path, "rt", encoding="utf-8-sig") as f:
+        sc = _Scan(f)
+        sc.expect("{")
+        while True:
+            c = sc.skip()
+            if c in ("}", ""):
+                return
+            key = sc.token()
+            sc.expect(":")
+            sc.expect("[")
+            want = key in ("total_mark", "upvote", "rating") and marks is None
+            col = array.array("d") if want else None
+            i = 0
+            while True:
+                c = sc.skip()
+                if c == "]":
+                    sc.pos += 1
+                    break
+                if c == "":
+                    raise ValueError("файл оборвался")
+                v = sc.token()
+                if col is not None:
+                    col.append(float(v) if isinstance(v, (int, float)) else 0.0)
+                elif key in ("text", "content", "joke"):
+                    mark = marks[i] if marks is not None and i < len(marks) else -i
+                    yield (v or ""), mark
+                i += 1
+                if i % 50000 == 0:
+                    print(f"\r   столбец {key}: {i}", end="", flush=True)
+            if col is not None:
+                marks = col
+            print(f"\r   столбец {key}: {i}       ")
+
+
+def _is_column_file(path):
+    import gzip
+    opener = gzip.open if path.endswith(".gz") else open
+    with opener(path, "rt", encoding="utf-8-sig") as f:
+        head = f.read(4096)
+    return re.match(r"\s*\{\s*['\"][^'\"]+['\"]\s*:\s*\[", head) is not None
+
+
+def _iter_file_rows(path):
+    """-> (текст, оценка) для любого из поддерживаемых видов файла."""
+    if _is_column_file(path):
+        print("   формат: словарь столбцов")
+        yield from _iter_column_rows(path)
+        return
     for n, row in enumerate(_iter_json_rows(path), 1):
         if isinstance(row, dict):
             row = row.get("row", row)
@@ -253,6 +383,17 @@ def from_file(path, pools, want):
             mark = float(mark) if mark is not None else -n          # без оценок — в порядке файла
         except (TypeError, ValueError):
             mark = -n
+        yield text, mark
+
+
+def from_file(path, pools, want):
+    """Взять из файла лучшие по оценке анекдоты (поле total_mark; нет его — upvote; нет и его — по порядку)."""
+    import heapq
+    print(f"==> Файл {path}")
+    heaps = {"normal": [], "adult": []}
+    keys = set()
+    n = 0
+    for n, (text, mark) in enumerate(_iter_file_rows(path), 1):
         text = clean(str(text))
         kind = classify(text)
         if kind is None:
