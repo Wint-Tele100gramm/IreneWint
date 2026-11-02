@@ -22,6 +22,7 @@ from vacore import VACore
 
 modname = os.path.basename(__file__)[:-3]
 logger = logging.getLogger(__name__)
+journal = logging.getLogger("rooms")      # журнал сервера комнат — виден в веб-интерфейсе
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_FILE = os.path.join(ROOT, "data", "jokes.json")
@@ -146,6 +147,9 @@ def tell(core: VACore, phrase: str, kind: str = "normal"):
             return
     joke = pick(kind)
     if joke is None:
+        journal.warning(f"Анекдоты: нет {'пошлых ' if kind == 'adult' else ''}анекдотов в {DATA_FILE} "
+                        f"(файл {'есть' if os.path.isfile(DATA_FILE) else 'не найден'}; обычных "
+                        f"{len(_jokes['normal'])}, пошлых {len(_jokes['adult'])})")
         if not os.path.isfile(DATA_FILE):
             core.say("Анекдотов пока нет. Их нужно один раз скачать на сервер, как — написано в инструкции")
         else:
