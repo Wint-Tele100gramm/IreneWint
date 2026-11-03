@@ -150,6 +150,15 @@ rm -rf "$HOME"/.cache/vosk/vosk-model-tts-*
 sed -i 's/"ttsEngineId": *"vosk"/"ttsEngineId": "silero"/' "$REPO/options/core.json" 2>/dev/null || true
 rm -f "$REPO/options/plugin_tts_vosk.json"
 
+echo "==> Разрешение Ирине включать максимальную частоту процессора на время речи"
+if ls /sys/devices/system/cpu/cpufreq/policy*/scaling_governor >/dev/null 2>&1; then
+  echo "z /sys/devices/system/cpu/cpufreq/policy*/scaling_governor 0664 root $(id -gn) -" \
+    | sudo tee /etc/tmpfiles.d/irene-cpufreq.conf >/dev/null
+  sudo systemd-tmpfiles --create /etc/tmpfiles.d/irene-cpufreq.conf || true
+else
+  echo "   регулятора частоты (cpufreq) нет — пропускаю"
+fi
+
 if [ ! -s "$REPO/data/jokes.json" ]; then
   echo "==> Анекдоты (Hugging Face igorktech/anekdots, несколько минут)"
   "$REPO/.venv/bin/python" "$REPO/scripts/get_jokes.py" || echo "!! Анекдоты не скачались — повторите: .venv/bin/python scripts/get_jokes.py"

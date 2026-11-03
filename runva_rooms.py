@@ -46,6 +46,7 @@ import numpy as np
 
 from jaa import load_options
 from vacore import VACore
+from utils import cpu_boost
 
 logger = logging.getLogger("rooms")
 
@@ -73,6 +74,8 @@ DEFAULT_OPTIONS = {
     "room_names": {},            # id клиента -> комната (зона HA), назначается на странице; важнее имени из клиента
     "local_volume": 100,         # громкость голоса на динамике приставки/ноутбука, % (поверх системной)
     "local_mic_gain_db": 0,      # усиление микрофона приставки/ноутбука, дБ (тихие встроенные микрофоны: 10–20)
+    "cpu_boost": True,           # максимальная частота процессора на время распознавания и озвучки (Linux)
+    "cpu_boost_hold_sec": 3,     # ...и ещё столько секунд после (фраза -> команда -> ответ без провалов)
 }
 ROOT = os.path.dirname(os.path.abspath(__file__))
 OPTIONS_FILE = os.path.join(ROOT, "options", "rooms.json")   # все настройки Ирины — в папке options
@@ -155,12 +158,16 @@ class Room:
                 if item == "END":
                     continue
             if isinstance(item, bytes):
+                if not self.local:
+                    self.server.boost.pulse()     # клиент шлёт звук только во время фразы (его VAD)
                 seg_bytes += len(item)
                 if self.dump is not None:
                     self.dump += item
                     if len(self.dump) > max_bytes:
                         del self.dump[:len(self.dump) - max_bytes]
                 text, partial = rec.accept(item)
+                if self.local and (text or partial):
+                    self.server.boost.pulse()     # микрофон приставки слушает всегда — ускоряем, когда есть речь
                 if text is not None:
                     seg_bytes = 0 if self.local else seg_bytes
                     if self.local:
@@ -335,9 +342,11 @@ class RoomServer:
         self.asr = create_backend(options)
         logger.warning(f"Распознавание речи: {self.asr.name}")
 
+        self.boost = cpu_boost.get(options)
         logger.warning("Загружаю плагины и модель голоса Silero (на слабой приставке — до полуминуты)")
         self.core = VACore()
-        self.core.init_with_plugins()
+        with self.boost:                          # загрузка модели — тоже быстрее на максимальной частоте
+            self.core.init_with_plugins()
         logger.warning("Модель голоса загружена")
         self.core.current_room = None
         self.core.rooms_server = self
@@ -382,6 +391,8 @@ class RoomServer:
 
     def apply_live_options(self):
         """Настройки, которые можно применить без перезапуска."""
+        self.boost.enabled = bool(self.options.get("cpu_boost", True))
+        self.boost.hold = float(self.options.get("cpu_boost_hold_sec", 3) or 0)
         dump = bool(self.options.get("dump_audio"))
         for room in self.rooms.values():
             if dump and room.dump is None:
@@ -576,7 +587,8 @@ class RoomServer:
         else:
             path = core.get_tempfilename() + ".wav"
         if not (core.useTTSCache and os.path.exists(path)):
-            core.tts_to_filewav(text, path)
+            with self.boost:
+                core.tts_to_filewav(text, path)
         elif core.useTTSCache:
             core.touch_cache_file(path)
         try:
