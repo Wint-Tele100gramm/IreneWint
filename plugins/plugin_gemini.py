@@ -1,11 +1,16 @@
-# Собеседник на нейросети: на всё, что не является командой Ирины, отвечает Алиса (Yandex AI Studio) или Gemini.
+# Собеседник на Google Gemini: на всё, что не является командой Ирины, отвечает нейросеть.
 # «ирина расскажи сказку про ёжика», «ирина почему небо голубое», «ирина а что было дальше?».
-# Явно: «ирина спроси алису …», «ирина спроси джемини …», «ирина спроси нейросеть …».
+# Явно: «ирина спроси нейросеть …», «ирина спроси джемини …».
 #
-# provider = "yandex" — модель Alice AI LLM в Yandex AI Studio: работает из России, платно (по токенам, есть
-#   стартовый грант). Нужны API-ключ сервисного аккаунта (роль ai.languageModels.user) и ID каталога.
-# provider = "gemini" — Google Gemini: бесплатный уровень, но из России нужен прокси или свой адрес API.
-# Настройки — options/plugin_llm.json или веб-интерфейс, раздел «Нейросеть».
+# Ключ: https://aistudio.google.com/apikey. Тариф ("tier"):
+#   free — бесплатный уровень: ограничение запросов в минуту и в день; при «лимит исчерпан» Ирина повторит
+#          вопрос облегчённой модели (fallback_model). Google может использовать запросы для обучения.
+#   paid — к проекту ключа в AI Studio привязан платёжный аккаунт (Cloud Billing): лимиты выше, доступны
+#          более сильные модели (model_paid), можно включить «размышления»; запросы не идут в обучение.
+#          Подписка Google AI Pro / Gemini Advanced (для приложения Gemini) к API отношения не имеет.
+#          Расход токенов считается помесячно (data/gemini_usage.json), есть лимит monthly_token_limit.
+# Из России Google API не отвечает («User location is not supported») — нужен прокси за границей
+# ("proxy": "socks5h://адрес:порт" или "http://адрес:порт") или свой ретранслятор ("base_url").
 #
 # Ответ говорится той комнате, где спросили; пока нейросеть думает, Ирина выполняет другие команды.
 # Последние реплики помнятся несколько минут — можно переспросить или попросить продолжить.
@@ -25,6 +30,8 @@ from vacore import VACore
 modname = os.path.basename(__file__)[:-3]
 logger = logging.getLogger(__name__)
 journal = logging.getLogger("rooms")
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+USAGE_FILE = os.path.join(ROOT, "data", "gemini_usage.json")
 
 SYSTEM_PROMPT = (
     "Ты — Ирина, голосовой помощник в умном доме. Твой ответ будет озвучен синтезатором речи, поэтому:\n"
@@ -47,24 +54,21 @@ _thinking_cfg_ok = {}    # модель -> понимает ли thinkingConfig 
 
 def start(core: VACore):
     return {
-        "name": "Нейросеть (Алиса / Gemini)",
-        "version": "2.0",
+        "name": "Нейросеть Gemini",
+        "version": "2.1",
         "require_online": True,
-        "description": "Отвечает на всё, что не является командой Ирины: сказки, вопросы, разговор.",
+        "description": "Отвечает на всё, что не является командой Ирины: сказки, вопросы, разговор (Google Gemini).",
         "default_options": {
             "enabled": True,
-            "provider": "yandex",               # yandex (Алиса, Yandex AI Studio) | gemini
-            # --- Yandex AI Studio
-            "yandex_api_key": "",
-            "yandex_folder_id": "",
-            "yandex_model": "aliceai-llm",      # или aliceai-llm-flash — быстрее и дешевле
-            "yandex_url": "https://ai.api.cloud.yandex.net/v1/responses",
-            # --- Google Gemini
             "api_key": "",                      # https://aistudio.google.com/apikey
-            "model": "gemini-flash-latest",
+            "tier": "free",                     # free | paid (к проекту ключа привязан платёжный аккаунт)
+            "model": "gemini-flash-latest",     # модель на бесплатном тарифе
+            "fallback_model": "gemini-flash-lite-latest",   # бесплатный тариф, лимит исчерпан — спросить её; "" — нет
+            "model_paid": "gemini-flash-latest",            # модель на платном (можно сильнее, например Pro)
+            "thinking_paid": False,             # «размышления» на платном: умнее, но дольше и дороже
+            "monthly_token_limit": 0,           # платный: не больше стольких токенов в месяц (0 — без лимита)
             "proxy": "",                        # socks5h://host:port или http://host:port — из России нужен
             "base_url": "https://generativelanguage.googleapis.com",
-            # --- общее
             "system_prompt": SYSTEM_PROMPT,
             "temperature": 0.8,
             "max_output_tokens": 1500,
@@ -76,10 +80,9 @@ def start(core: VACore):
             "thinking_after_sec": 3,
         },
         "commands": {
-            "спроси нейросеть|спроси у нейросети|нейросеть": ask_cmd,
-            "спроси алису|спроси у алисы|алиса": (ask_cmd, "yandex"),
-            "спроси джемини|спроси у джемини|спроси гугл|джемини": (ask_cmd, "gemini"),
+            "спроси нейросеть|спроси у нейросети|спроси джемини|спроси у джемини|спроси гугл|нейросеть|джемини": ask_cmd,
             "забудь разговор|начни разговор заново|забудь что я говорил": forget_cmd,
+            "расход нейросети|сколько потрачено на нейросеть|сколько токенов потрачено": usage_cmd,
         },
     }
 
@@ -90,29 +93,28 @@ def start_with_options(core: VACore, manifest: dict):
 
 
 def _migrate(core, options):
-    """Настройки прежнего plugin_gemini (ключ, модель, прокси) — сюда, один раз."""
-    old = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "options", "plugin_gemini.json")
-    if not os.path.isfile(old):
-        return
-    try:
-        with open(old, encoding="utf-8") as f:
-            o = json.load(f)
-        for k in ("api_key", "model", "proxy", "base_url", "enabled", "temperature", "thinking_phrase",
-                  "history_minutes", "system_prompt"):
-            if o.get(k) not in (None, ""):
-                options[k] = o[k]
-        if o.get("api_key") and not options.get("yandex_api_key"):
-            options["provider"] = "gemini"      # Gemini уже был настроен — остаётся им
-        core.save_plugin_options(modname, options)
-        os.replace(old, old + ".old")
-        logger.info("Настройки plugin_gemini перенесены в plugin_llm")
-    except Exception as e:
-        logger.warning(f"Не удалось перенести настройки plugin_gemini: {e}")
+    """Настройки из plugin_llm (была версия с Алисой) или из старого plugin_gemini.json.old — сюда, один раз."""
+    opt_dir = os.path.join(ROOT, "options")
+    for name in ("plugin_llm.json", "plugin_gemini.json.old"):
+        old = os.path.join(opt_dir, name)
+        if not os.path.isfile(old):
+            continue
+        try:
+            with open(old, encoding="utf-8") as f:
+                o = json.load(f)
+            if not options.get("api_key"):
+                for k in ("api_key", "model", "proxy", "base_url", "enabled", "temperature", "thinking_phrase",
+                          "history_minutes", "system_prompt"):
+                    if o.get(k) not in (None, ""):
+                        options[k] = o[k]
+                core.save_plugin_options(modname, options)
+            os.replace(old, old + ".migrated")
+            logger.info(f"Настройки {name} перенесены в plugin_gemini")
+        except Exception as e:
+            logger.warning(f"Не удалось перенести настройки {name}: {e}")
 
 
-def _ready(o, provider):
-    if provider == "yandex":
-        return bool(o.get("yandex_api_key") and o.get("yandex_folder_id"))
+def _ready(o):
     return bool(o.get("api_key"))
 
 
@@ -125,7 +127,7 @@ def _room_key(core):
 def unknown_command(core: VACore, text: str) -> bool:
     o = core.plugin_options(modname)
     text = (text or "").strip()
-    if not o.get("enabled", True) or not _ready(o, o.get("provider", "yandex")) or not core.isOnline:
+    if not o.get("enabled", True) or not _ready(o) or not core.isOnline:
         return False
     if len(text) < 3:
         return False                          # одно имя «Ирина» — пусть ядро ответит как обычно
@@ -133,17 +135,15 @@ def unknown_command(core: VACore, text: str) -> bool:
     return True
 
 
-def ask_cmd(core: VACore, phrase: str, provider: str = None):
+def ask_cmd(core: VACore, phrase: str):
     o = core.plugin_options(modname)
-    provider = provider or o.get("provider", "yandex")
-    if not _ready(o, provider):
-        core.say("Не заданы ключ и каталог Яндекса в настройках нейросети" if provider == "yandex"
-                 else "Не задан ключ Gemini. Укажите его в настройках нейросети")
+    if not _ready(o):
+        core.say("Не задан ключ Gemini. Укажите его в настройках нейросети")
         return
     if not phrase.strip():
         core.say("Что спросить у нейросети?")
         return
-    ask(core, phrase.strip(), provider)
+    ask(core, phrase.strip())
 
 
 def forget_cmd(core: VACore, phrase: str):
@@ -153,14 +153,13 @@ def forget_cmd(core: VACore, phrase: str):
 
 
 # ---------------------------------------------------------------- запрос в фоне
-def ask(core: VACore, question: str, provider: str = None):
+def ask(core: VACore, question: str):
     """Спросить в фоне и ответить в той же комнате (поток команд не ждёт сеть)."""
     room = getattr(core, "current_room", None)
     key = _room_key(core)
     server = getattr(core, "rooms_server", None)
     o = dict(core.plugin_options(modname))
-    provider = provider or o.get("provider", "yandex")
-    title = "Алиса" if provider == "yandex" else "Gemini"
+    title = "Gemini"
     done = threading.Event()
     order = threading.Lock()                  # «Сейчас подумаю» не должно прозвучать после ответа
 
@@ -180,7 +179,7 @@ def ask(core: VACore, question: str, provider: str = None):
     def work():
         started = time.time()
         try:
-            answer = (query_yandex if provider == "yandex" else query)(o, key, question)
+            answer = query(o, key, question)
         except LLMError as e:
             journal.warning(f"{title}: {e.log}")
             answer = e.spoken
@@ -200,9 +199,9 @@ def ask(core: VACore, question: str, provider: str = None):
 
 
 class LLMError(Exception):
-    def __init__(self, spoken, log):
+    def __init__(self, spoken, log, code=None):
         super().__init__(log)
-        self.spoken, self.log = spoken, log
+        self.spoken, self.log, self.code = spoken, log, code
 
 
 def _history_of(o, key):
@@ -221,8 +220,8 @@ def _remember(o, key, question, answer):
         _history_time[key] = time.time()
 
 
-def _post(o, body):
-    url = f"{o.get('base_url', '').rstrip('/')}/v1beta/models/{o.get('model')}:generateContent"
+def _post(o, body, model):
+    url = f"{o.get('base_url', '').rstrip('/')}/v1beta/models/{model}:generateContent"
     proxy = (o.get("proxy") or "").strip()
     try:
         return requests.post(url, json=body, headers={"x-goog-api-key": o["api_key"]},
@@ -238,24 +237,33 @@ def _post(o, body):
         raise LLMError("Нет связи с нейросетью", str(e))
 
 
+def _paid(o) -> bool:
+    return str(o.get("tier", "free")).lower() == "paid"
+
+
 def query(o: dict, key, question: str) -> str:
+    paid = _paid(o)
+    limit = int(o.get("monthly_token_limit") or 0)
+    if paid and limit and usage()["tokens"] >= limit:
+        raise LLMError("Месячный лимит нейросети исчерпан. Его можно поднять в настройках",
+                       f"месячный лимит {limit} токенов исчерпан")
+    model = (o.get("model_paid") if paid else o.get("model")) or "gemini-flash-latest"
     contents = [{"role": r, "parts": [{"text": t}]} for r, t in _history_of(o, key)]
     contents.append({"role": "user", "parts": [{"text": question}]})
-    gen = {"temperature": float(o.get("temperature", 0.8)), "maxOutputTokens": int(o.get("max_output_tokens", 1500)),
-           # «размышления» моделей 2.5 / 3.x добавляют секунды ожидания — голосовому помощнику не нужны
-           "thinkingConfig": {"thinkingBudget": 0}}
-    if not _thinking_cfg_ok.get(o.get("model"), True):
-        gen.pop("thinkingConfig")
     body = {"systemInstruction": {"parts": [{"text": o.get("system_prompt") or SYSTEM_PROMPT}]},
-            "contents": contents, "generationConfig": gen}
-    r = _post(o, body)
-    if r.status_code == 400 and "thinking" in r.text.lower() and "thinkingConfig" in gen:
-        gen.pop("thinkingConfig")           # модель не умеет отключать размышления — спросим без этого
-        _thinking_cfg_ok[o.get("model")] = False
-        r = _post(o, body)
-    if r.status_code != 200:
-        _raise_http(r)
-    data = r.json()
+            "contents": contents}
+    think = paid and bool(o.get("thinking_paid"))
+    try:
+        data = _generate(o, body, model, think)
+    except LLMError as e:
+        fallback = (o.get("fallback_model") or "").strip()
+        if paid or e.code != 429 or not fallback or fallback == model:
+            raise
+        # бесплатный тариф: у облегчённой модели свой, больший дневной лимит
+        journal.info(f"Gemini: лимит {model} исчерпан, спрашиваю {fallback}")
+        data = _generate(o, body, fallback, False)
+    meta = data.get("usageMetadata") or {}
+    _count_usage(int(meta.get("totalTokenCount") or 0))
     cand = (data.get("candidates") or [{}])[0]
     parts = (cand.get("content") or {}).get("parts") or []
     text = " ".join(p.get("text", "") for p in parts if not p.get("thought"))
@@ -269,62 +277,67 @@ def query(o: dict, key, question: str) -> str:
     return text
 
 
-# ---------------------------------------------------------------- Yandex AI Studio (Alice AI LLM)
-def query_yandex(o: dict, key, question: str) -> str:
-    """OpenAI-совместимый Responses API Yandex AI Studio."""
-    msgs = [{"role": "assistant" if r == "model" else "user", "content": t} for r, t in _history_of(o, key)]
-    msgs.append({"role": "user", "content": question})
-    model = (o.get("yandex_model") or "aliceai-llm").strip()
-    if not model.startswith("gpt://"):
-        model = f"gpt://{o['yandex_folder_id'].strip()}/{model}"
-    body = {"model": model, "instructions": o.get("system_prompt") or SYSTEM_PROMPT, "input": msgs,
-            "temperature": float(o.get("temperature", 0.8)), "max_output_tokens": int(o.get("max_output_tokens", 1500))}
-    try:
-        r = requests.post(o.get("yandex_url") or "https://ai.api.cloud.yandex.net/v1/responses", json=body,
-                          headers={"Authorization": "Api-Key " + o["yandex_api_key"].strip(),
-                                   "OpenAI-Project": o["yandex_folder_id"].strip()},
-                          timeout=float(o.get("timeout", 40)))
-    except requests.exceptions.Timeout:
-        raise LLMError("Алиса слишком долго думает, попробуйте ещё раз", "таймаут")
-    except requests.exceptions.ConnectionError as e:
-        raise LLMError("Нет связи с Яндексом", str(e))
+def _generate(o, body, model, think):
+    gen = {"temperature": float(o.get("temperature", 0.8)), "maxOutputTokens": int(o.get("max_output_tokens", 1500))}
+    if think:
+        # «размышления» съедают часть maxOutputTokens — добавим им места
+        gen["maxOutputTokens"] += 4096
+    elif _thinking_cfg_ok.get(model, True):
+        # «размышления» добавляют секунды ожидания — голосовому помощнику обычно не нужны
+        gen["thinkingConfig"] = {"thinkingBudget": 0}
+    body = dict(body, generationConfig=gen)
+    r = _post(o, body, model)
+    if r.status_code == 400 and "thinking" in r.text.lower() and "thinkingConfig" in gen:
+        gen.pop("thinkingConfig")           # модель не умеет отключать размышления — спросим без этого
+        _thinking_cfg_ok[model] = False
+        r = _post(o, body, model)
     if r.status_code != 200:
-        _raise_http_yandex(r)
-    data = r.json()
-    text = data.get("output_text") or ""
-    if not text:
-        for item in data.get("output") or []:
-            if item.get("type") == "message":
-                text += " ".join(c.get("text", "") for c in item.get("content") or []
-                                 if c.get("type") in ("output_text", "text"))
-    if not text.strip():
-        raise LLMError("Алиса ничего не ответила", f"пустой ответ: {str(data)[:300]}")
-    text = for_speech(text, int(o.get("max_chars", 2500)))
-    _remember(o, key, question, text)
-    return text
+        _raise_http(r)
+    return r.json()
 
 
-def _raise_http_yandex(r):
+# ---------------------------------------------------------------- учёт расхода (по месяцам)
+def usage() -> dict:
+    month = time.strftime("%Y-%m")
     try:
-        d = r.json()
-        err = d.get("error") or d
-        msg = err.get("message") if isinstance(err, dict) else str(err)
+        with open(USAGE_FILE, encoding="utf-8") as f:
+            u = json.load(f)
     except Exception:
-        msg = r.text[:300]
-    log = f"HTTP {r.status_code}: {msg}"
-    if r.status_code in (401, 403):
-        raise LLMError("Яндекс не принял ключ. Проверьте ключ, каталог и роль сервисного аккаунта", log)
-    if r.status_code == 429:
-        raise LLMError("Слишком много запросов к Алисе, попробуйте позже", log)
-    low = (msg or "").lower()
-    if r.status_code == 404 or ("model" in low and ("not found" in low or "unknown" in low or "не найден" in low)):
-        raise LLMError("Такой модели в Яндексе нет. Проверьте название модели в настройках", log)
-    if r.status_code == 402 or "billing" in (msg or "").lower() or "balance" in (msg or "").lower():
-        raise LLMError("В Яндекс Облаке закончились деньги или не привязан платёжный аккаунт", log)
-    raise LLMError("Яндекс ответил ошибкой", log)
+        u = {}
+    if u.get("month") != month:
+        u = {"month": month, "tokens": 0, "requests": 0}
+    return u
 
 
-# ---------------------------------------------------------------- Google Gemini
+def _count_usage(tokens: int):
+    with _lock:
+        u = usage()
+        u["tokens"] += tokens
+        u["requests"] += 1
+        try:
+            os.makedirs(os.path.dirname(USAGE_FILE), exist_ok=True)
+            with open(USAGE_FILE + ".tmp", "w", encoding="utf-8") as f:
+                json.dump(u, f)
+            os.replace(USAGE_FILE + ".tmp", USAGE_FILE)
+        except OSError as e:
+            logger.warning(f"Gemini: не сохранить расход: {e}")
+
+
+def usage_cmd(core: VACore, phrase: str):
+    from utils.num_to_text_ru import num2text
+    o = core.plugin_options(modname)
+    u = usage()
+    req = num2text(u["requests"], (("запрос", "запроса", "запросов"), "m"))
+    k = round(u["tokens"] / 1000)
+    tok = (num2text(k, (("тысяча токенов", "тысячи токенов", "тысяч токенов"), "f")) if k
+           else num2text(u["tokens"], (("токен", "токена", "токенов"), "m")))
+    text = f"В этом месяце {req} к нейросети, {tok}"
+    limit = int(o.get("monthly_token_limit") or 0)
+    if _paid(o) and limit:
+        text += f", это {min(100, round(u['tokens'] * 100 / limit))} процентов месячного лимита"
+    core.say(text)
+
+
 def _raise_http(r):
     try:
         err = r.json().get("error", {})
@@ -337,7 +350,7 @@ def _raise_http(r):
     if r.status_code in (401, 403) or "api key" in msg.lower():
         raise LLMError("Ключ Gemini не подходит. Проверьте его в настройках", log)
     if r.status_code == 429:
-        raise LLMError("Лимит запросов к нейросети исчерпан, попробуйте позже", log)
+        raise LLMError("Лимит запросов к нейросети исчерпан, попробуйте позже", log, 429)
     if r.status_code == 404:
         raise LLMError("Такой модели Gemini нет. Проверьте название модели в настройках", log)
     raise LLMError("Нейросеть ответила ошибкой", log)
