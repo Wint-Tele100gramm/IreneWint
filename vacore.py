@@ -258,6 +258,10 @@ class VACore(JaaCore):
                 self.execute_next(rest_phrase, context[keyall])
                 return
             if self.context is None:
+                # команды нет: её может взять плагин-«собеседник» (plugin_gemini) — он вернёт True
+                handler = getattr(self, "unknown_command_handler", None)
+                if handler is not None and handler(self, self.input_cmd_full):
+                    return
                 self.say(self.plugin_options("core")["replyNoCommandFound"])
             else:
                 self.say(self.plugin_options("core")["replyNoCommandFoundInContext"])

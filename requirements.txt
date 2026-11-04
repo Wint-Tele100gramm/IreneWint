@@ -8,6 +8,7 @@
 # Ядро Ирины
 termcolor>=2.4
 requests>=2.32
+PySocks>=1.7          # прокси socks5 для нейросети Gemini (plugin_gemini)
 python-dateutil>=2.9
 
 # Распознавание речи (офлайн): потоковая модель Vosk через sherpa-onnx
