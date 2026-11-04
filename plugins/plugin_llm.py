@@ -1,16 +1,17 @@
-# Собеседник на Google Gemini: на всё, что не является командой Ирины, отвечает нейросеть.
+# Собеседник на нейросети: на всё, что не является командой Ирины, отвечает Алиса (Yandex AI Studio) или Gemini.
 # «ирина расскажи сказку про ёжика», «ирина почему небо голубое», «ирина а что было дальше?».
-# Явно: «ирина спроси нейросеть …», «ирина спроси у джемини …».
+# Явно: «ирина спроси алису …», «ирина спроси джемини …», «ирина спроси нейросеть …».
 #
-# Нужен ключ Gemini API: https://aistudio.google.com/apikey (бесплатный уровень с ограничением запросов).
-# Из России Google API не отвечает («User location is not supported») — нужен прокси за границей
-# ("proxy": "socks5h://адрес:порт" или "http://адрес:порт") или свой ретранслятор ("base_url").
-# Настройки — options/plugin_gemini.json или веб-интерфейс, раздел «Нейросеть (Gemini)».
+# provider = "yandex" — модель Alice AI LLM в Yandex AI Studio: работает из России, платно (по токенам, есть
+#   стартовый грант). Нужны API-ключ сервисного аккаунта (роль ai.languageModels.user) и ID каталога.
+# provider = "gemini" — Google Gemini: бесплатный уровень, но из России нужен прокси или свой адрес API.
+# Настройки — options/plugin_llm.json или веб-интерфейс, раздел «Нейросеть».
 #
 # Ответ говорится той комнате, где спросили; пока нейросеть думает, Ирина выполняет другие команды.
 # Последние реплики помнятся несколько минут — можно переспросить или попросить продолжить.
 
 import collections
+import json
 import logging
 import os
 import re
@@ -46,16 +47,24 @@ _thinking_cfg_ok = {}    # модель -> понимает ли thinkingConfig 
 
 def start(core: VACore):
     return {
-        "name": "Нейросеть Gemini",
-        "version": "1.0",
+        "name": "Нейросеть (Алиса / Gemini)",
+        "version": "2.0",
         "require_online": True,
-        "description": "Отвечает на всё, что не является командой Ирины: сказки, вопросы, разговор (Google Gemini).",
+        "description": "Отвечает на всё, что не является командой Ирины: сказки, вопросы, разговор.",
         "default_options": {
             "enabled": True,
+            "provider": "yandex",               # yandex (Алиса, Yandex AI Studio) | gemini
+            # --- Yandex AI Studio
+            "yandex_api_key": "",
+            "yandex_folder_id": "",
+            "yandex_model": "aliceai-llm",      # или aliceai-llm-flash — быстрее и дешевле
+            "yandex_url": "https://ai.api.cloud.yandex.net/v1/responses",
+            # --- Google Gemini
             "api_key": "",                      # https://aistudio.google.com/apikey
-            "model": "gemini-flash-latest",     # или конкретная модель, например gemini-3.5-flash-lite
+            "model": "gemini-flash-latest",
             "proxy": "",                        # socks5h://host:port или http://host:port — из России нужен
             "base_url": "https://generativelanguage.googleapis.com",
+            # --- общее
             "system_prompt": SYSTEM_PROMPT,
             "temperature": 0.8,
             "max_output_tokens": 1500,
@@ -67,14 +76,44 @@ def start(core: VACore):
             "thinking_after_sec": 3,
         },
         "commands": {
-            "спроси нейросеть|спроси у нейросети|спроси джемини|спроси у джемини|спроси гугл|нейросеть": ask_cmd,
+            "спроси нейросеть|спроси у нейросети|нейросеть": ask_cmd,
+            "спроси алису|спроси у алисы|алиса": (ask_cmd, "yandex"),
+            "спроси джемини|спроси у джемини|спроси гугл|джемини": (ask_cmd, "gemini"),
             "забудь разговор|начни разговор заново|забудь что я говорил": forget_cmd,
         },
     }
 
 
 def start_with_options(core: VACore, manifest: dict):
+    _migrate(core, manifest["options"])
     core.unknown_command_handler = unknown_command
+
+
+def _migrate(core, options):
+    """Настройки прежнего plugin_gemini (ключ, модель, прокси) — сюда, один раз."""
+    old = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "options", "plugin_gemini.json")
+    if not os.path.isfile(old):
+        return
+    try:
+        with open(old, encoding="utf-8") as f:
+            o = json.load(f)
+        for k in ("api_key", "model", "proxy", "base_url", "enabled", "temperature", "thinking_phrase",
+                  "history_minutes", "system_prompt"):
+            if o.get(k) not in (None, ""):
+                options[k] = o[k]
+        if o.get("api_key") and not options.get("yandex_api_key"):
+            options["provider"] = "gemini"      # Gemini уже был настроен — остаётся им
+        core.save_plugin_options(modname, options)
+        os.replace(old, old + ".old")
+        logger.info("Настройки plugin_gemini перенесены в plugin_llm")
+    except Exception as e:
+        logger.warning(f"Не удалось перенести настройки plugin_gemini: {e}")
+
+
+def _ready(o, provider):
+    if provider == "yandex":
+        return bool(o.get("yandex_api_key") and o.get("yandex_folder_id"))
+    return bool(o.get("api_key"))
 
 
 # ---------------------------------------------------------------- команды
@@ -86,7 +125,7 @@ def _room_key(core):
 def unknown_command(core: VACore, text: str) -> bool:
     o = core.plugin_options(modname)
     text = (text or "").strip()
-    if not o.get("enabled", True) or not o.get("api_key") or not core.isOnline:
+    if not o.get("enabled", True) or not _ready(o, o.get("provider", "yandex")) or not core.isOnline:
         return False
     if len(text) < 3:
         return False                          # одно имя «Ирина» — пусть ядро ответит как обычно
@@ -94,15 +133,17 @@ def unknown_command(core: VACore, text: str) -> bool:
     return True
 
 
-def ask_cmd(core: VACore, phrase: str):
+def ask_cmd(core: VACore, phrase: str, provider: str = None):
     o = core.plugin_options(modname)
-    if not o.get("api_key"):
-        core.say("Не задан ключ Gemini. Укажите его в настройках нейросети")
+    provider = provider or o.get("provider", "yandex")
+    if not _ready(o, provider):
+        core.say("Не заданы ключ и каталог Яндекса в настройках нейросети" if provider == "yandex"
+                 else "Не задан ключ Gemini. Укажите его в настройках нейросети")
         return
     if not phrase.strip():
         core.say("Что спросить у нейросети?")
         return
-    ask(core, phrase.strip())
+    ask(core, phrase.strip(), provider)
 
 
 def forget_cmd(core: VACore, phrase: str):
@@ -112,12 +153,14 @@ def forget_cmd(core: VACore, phrase: str):
 
 
 # ---------------------------------------------------------------- запрос в фоне
-def ask(core: VACore, question: str):
+def ask(core: VACore, question: str, provider: str = None):
     """Спросить в фоне и ответить в той же комнате (поток команд не ждёт сеть)."""
     room = getattr(core, "current_room", None)
     key = _room_key(core)
     server = getattr(core, "rooms_server", None)
     o = dict(core.plugin_options(modname))
+    provider = provider or o.get("provider", "yandex")
+    title = "Алиса" if provider == "yandex" else "Gemini"
     done = threading.Event()
     order = threading.Lock()                  # «Сейчас подумаю» не должно прозвучать после ответа
 
@@ -137,26 +180,26 @@ def ask(core: VACore, question: str):
     def work():
         started = time.time()
         try:
-            answer = query(o, key, question)
-        except GeminiError as e:
-            journal.warning(f"Gemini: {e.log}")
+            answer = (query_yandex if provider == "yandex" else query)(o, key, question)
+        except LLMError as e:
+            journal.warning(f"{title}: {e.log}")
             answer = e.spoken
         except Exception as e:
             logger.exception(e)
-            journal.warning(f"Gemini: {e}")
+            journal.warning(f"{title}: {e}")
             answer = "Не получилось спросить нейросеть"
         finally:
             with order:
                 done.set()
-        journal.info(f"Gemini ({time.time() - started:.1f} с): «{question}» -> «{answer[:120]}»")
+        journal.info(f"{title} ({time.time() - started:.1f} с): «{question}» -> «{answer[:120]}»")
         say_in_room(answer)
 
-    journal.info(f"Gemini: спрашиваю «{question}»")
+    journal.info(f"{title}: спрашиваю «{question}»")
     threading.Thread(target=thinking, name="gemini-wait", daemon=True).start()
     threading.Thread(target=work, name="gemini", daemon=True).start()
 
 
-class GeminiError(Exception):
+class LLMError(Exception):
     def __init__(self, spoken, log):
         super().__init__(log)
         self.spoken, self.log = spoken, log
@@ -186,13 +229,13 @@ def _post(o, body):
                              proxies={"http": proxy, "https": proxy} if proxy else None,
                              timeout=float(o.get("timeout", 40)))
     except requests.exceptions.InvalidSchema as e:
-        raise GeminiError("Для прокси socks нужен пакет PySocks", f"{e} — установите: .venv/bin/pip install pysocks")
+        raise LLMError("Для прокси socks нужен пакет PySocks", f"{e} — установите: .venv/bin/pip install pysocks")
     except requests.exceptions.ProxyError as e:
-        raise GeminiError("Прокси для нейросети не отвечает", f"прокси {proxy}: {e}")
+        raise LLMError("Прокси для нейросети не отвечает", f"прокси {proxy}: {e}")
     except requests.exceptions.Timeout:
-        raise GeminiError("Нейросеть слишком долго думает, попробуйте ещё раз", "таймаут")
+        raise LLMError("Нейросеть слишком долго думает, попробуйте ещё раз", "таймаут")
     except requests.exceptions.ConnectionError as e:
-        raise GeminiError("Нет связи с нейросетью", str(e))
+        raise LLMError("Нет связи с нейросетью", str(e))
 
 
 def query(o: dict, key, question: str) -> str:
@@ -219,13 +262,69 @@ def query(o: dict, key, question: str) -> str:
     if not text.strip():
         reason = cand.get("finishReason") or (data.get("promptFeedback") or {}).get("blockReason") or "пусто"
         if reason in ("SAFETY", "PROHIBITED_CONTENT", "BLOCKLIST", "OTHER"):
-            raise GeminiError("На это я отвечать не буду", f"ответ заблокирован: {reason}")
-        raise GeminiError("Нейросеть ничего не ответила", f"пустой ответ: {reason}")
+            raise LLMError("На это я отвечать не буду", f"ответ заблокирован: {reason}")
+        raise LLMError("Нейросеть ничего не ответила", f"пустой ответ: {reason}")
     text = for_speech(text, int(o.get("max_chars", 2500)))
     _remember(o, key, question, text)
     return text
 
 
+# ---------------------------------------------------------------- Yandex AI Studio (Alice AI LLM)
+def query_yandex(o: dict, key, question: str) -> str:
+    """OpenAI-совместимый Responses API Yandex AI Studio."""
+    msgs = [{"role": "assistant" if r == "model" else "user", "content": t} for r, t in _history_of(o, key)]
+    msgs.append({"role": "user", "content": question})
+    model = (o.get("yandex_model") or "aliceai-llm").strip()
+    if not model.startswith("gpt://"):
+        model = f"gpt://{o['yandex_folder_id'].strip()}/{model}"
+    body = {"model": model, "instructions": o.get("system_prompt") or SYSTEM_PROMPT, "input": msgs,
+            "temperature": float(o.get("temperature", 0.8)), "max_output_tokens": int(o.get("max_output_tokens", 1500))}
+    try:
+        r = requests.post(o.get("yandex_url") or "https://ai.api.cloud.yandex.net/v1/responses", json=body,
+                          headers={"Authorization": "Api-Key " + o["yandex_api_key"].strip(),
+                                   "OpenAI-Project": o["yandex_folder_id"].strip()},
+                          timeout=float(o.get("timeout", 40)))
+    except requests.exceptions.Timeout:
+        raise LLMError("Алиса слишком долго думает, попробуйте ещё раз", "таймаут")
+    except requests.exceptions.ConnectionError as e:
+        raise LLMError("Нет связи с Яндексом", str(e))
+    if r.status_code != 200:
+        _raise_http_yandex(r)
+    data = r.json()
+    text = data.get("output_text") or ""
+    if not text:
+        for item in data.get("output") or []:
+            if item.get("type") == "message":
+                text += " ".join(c.get("text", "") for c in item.get("content") or []
+                                 if c.get("type") in ("output_text", "text"))
+    if not text.strip():
+        raise LLMError("Алиса ничего не ответила", f"пустой ответ: {str(data)[:300]}")
+    text = for_speech(text, int(o.get("max_chars", 2500)))
+    _remember(o, key, question, text)
+    return text
+
+
+def _raise_http_yandex(r):
+    try:
+        d = r.json()
+        err = d.get("error") or d
+        msg = err.get("message") if isinstance(err, dict) else str(err)
+    except Exception:
+        msg = r.text[:300]
+    log = f"HTTP {r.status_code}: {msg}"
+    if r.status_code in (401, 403):
+        raise LLMError("Яндекс не принял ключ. Проверьте ключ, каталог и роль сервисного аккаунта", log)
+    if r.status_code == 429:
+        raise LLMError("Слишком много запросов к Алисе, попробуйте позже", log)
+    low = (msg or "").lower()
+    if r.status_code == 404 or ("model" in low and ("not found" in low or "unknown" in low or "не найден" in low)):
+        raise LLMError("Такой модели в Яндексе нет. Проверьте название модели в настройках", log)
+    if r.status_code == 402 or "billing" in (msg or "").lower() or "balance" in (msg or "").lower():
+        raise LLMError("В Яндекс Облаке закончились деньги или не привязан платёжный аккаунт", log)
+    raise LLMError("Яндекс ответил ошибкой", log)
+
+
+# ---------------------------------------------------------------- Google Gemini
 def _raise_http(r):
     try:
         err = r.json().get("error", {})
@@ -234,14 +333,14 @@ def _raise_http(r):
         msg, status = r.text[:200], ""
     log = f"HTTP {r.status_code} {status}: {msg}"
     if "location is not supported" in msg.lower():
-        raise GeminiError("Нейросеть недоступна из этой страны. Нужен прокси в настройках", log)
+        raise LLMError("Нейросеть недоступна из этой страны. Нужен прокси в настройках", log)
     if r.status_code in (401, 403) or "api key" in msg.lower():
-        raise GeminiError("Ключ Gemini не подходит. Проверьте его в настройках", log)
+        raise LLMError("Ключ Gemini не подходит. Проверьте его в настройках", log)
     if r.status_code == 429:
-        raise GeminiError("Лимит запросов к нейросети исчерпан, попробуйте позже", log)
+        raise LLMError("Лимит запросов к нейросети исчерпан, попробуйте позже", log)
     if r.status_code == 404:
-        raise GeminiError("Такой модели Gemini нет. Проверьте название модели в настройках", log)
-    raise GeminiError("Нейросеть ответила ошибкой", log)
+        raise LLMError("Такой модели Gemini нет. Проверьте название модели в настройках", log)
+    raise LLMError("Нейросеть ответила ошибкой", log)
 
 
 _EMOJI = re.compile("[\U0001F000-\U0001FAFF\u2600-\u27BF\uFE0F\u200D]")
