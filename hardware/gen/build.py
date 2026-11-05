@@ -135,6 +135,9 @@ def main():
         print("GERBER:", e)
     write_bom(parts)
     write_cpl(parts)
+    import lay6_export
+    lay6_export.write(os.path.join(OUT, NAME + ".lay6"), parts, tracks, vias, pours["stitch"], texts)
+    print(f"Sprint Layout 6: {NAME}.lay6")
     # картинки
     all_vias = vias + pours["stitch"]
     img = os.path.join(OUT, "img")
