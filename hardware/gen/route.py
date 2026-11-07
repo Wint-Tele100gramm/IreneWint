@@ -18,7 +18,8 @@ DAC_GAP = 0.3         # между дорожками ЦАП у его выво�
 FINE_PARTS = ("U3", "U4")
 VIA = (1.4, 0.6)      # переход: площадка 1,4 мм, отверстие 0,6 мм — под проволочную перемычку
 VIAS = {c: VIA for c in ("default", "supply", "power", "dac", "gnd")}
-ROUTE_GND = False     # землю ведёт заливка; зажатые выводы — отдельными связями GNDL<n> (см. write_dsn)
+ROUTE_GND = True        # земля — обычная цепь: трассировщик связывает все её выводы, заливка — поверх
+GND_SKIP = set()
 VIA_COST = 200        # «цена» перехода для Freerouting (по умолчанию 50): меньше перемычек
 SPEAKER = {"OUTL_P", "OUTL_N", "OUTR_P", "OUTR_N", "SPK_LP", "SPK_LN", "SPK_RP", "SPK_RN"}
 DAC_NETS = {"DAC_CAPP", "DAC_CAPM", "DAC_VNEG", "DAC_OUTL", "DAC_OUTR", "DAC_LDOO", "I2S_BCK", "I2S_DIN",
@@ -26,7 +27,7 @@ DAC_NETS = {"DAC_CAPP", "DAC_CAPM", "DAC_VNEG", "DAC_OUTL", "DAC_OUTR", "DAC_LDO
 
 
 def net_class(net):
-    if net == "GND" or net.startswith("GNDL"):
+    if net == "GND" or net.startswith(("GNDL", "GNDA")):
         return "gnd"      # земля: трассировщик ведёт узкими дорожками к каждому выводу, дальше — заливка
     if net in DAC_NETS:
         return "dac"
@@ -158,16 +159,28 @@ def padstack(pad, cache):
     return name
 
 
-def write_dsn(parts, path, gnd_links=(), resume=None):
-    """gnd_links — пары (зажатый земляной вывод, ближайший связанный земляной вывод): каждая пара становится
+def write_dsn(parts, path, gnd_links=(), resume=None, anchors=()):
+    """anchors — опоры земли: переход на сплошную землю снизу в свободном месте рядом с зажатыми земляными
+    выводами; выводы и опора — отдельная цепь GNDA<n>, трассировщик ведёт к опоре короткую дорожку.
+    gnd_links — пары (зажатый земляной вывод, ближайший связанный земляной вывод): каждая пара становится
     отдельной цепью GNDL<n>, и трассировщик проводит между ними дорожку (потом это просто земля)."""
     link_of = {}
     for k, (a, b) in enumerate(gnd_links, 1):
         link_of[(a.ref, a.pin_name)] = f"GNDL{k}"
         link_of[(b.ref, b.pin_name)] = f"GNDL{k}"
+    for k, a in enumerate(anchors, 1):
+        for ref, num in a["pads"]:
+            pd = next(pd for p in parts for pd in p.pads if pd.ref == ref and pd.num == num)
+            link_of[(ref, pd.pin_name)] = f"GNDA{k}"
     cache = {}
     images, placement = [], []
     pins_by_net = {}
+    for k, a in enumerate(anchors, 1):
+        d = VIA[0]
+        cache[f"anchor"] = ("PSANCHOR", f"    (padstack PSANCHOR\n      (shape (circle F.Cu {um(d)}))\n      (shape (circle B.Cu {um(d)}))\n      (attach off)\n    )")
+        images.append(f"    (image IMG_GA{k}\n      (pin PSANCHOR \"1\" 0 0)\n    )")
+        placement.append(f"    (component IMG_GA{k} (place GA{k} {X(a['x'])} {Y(a['y'])} front 0))")
+        pins_by_net.setdefault(f"GNDA{k}", []).append(f"GA{k}-1")
     for p in parts:
         lines = []
         for pad in p.pads:
@@ -184,7 +197,7 @@ def write_dsn(parts, path, gnd_links=(), resume=None):
             lines.append(f"      (pin {ps} {q(pad.pin_name)} {um(px)} {um(py)})")
             if (p.ref, pad.pin_name) in link_of and pad.net == "GND":
                 pins_by_net.setdefault(link_of[(p.ref, pad.pin_name)], []).append(f"{p.ref}-{pad.pin_name}")
-            elif pad.net and (pad.net != "GND" or ROUTE_GND):
+            elif pad.net and (pad.net != "GND" or (ROUTE_GND and p.ref not in GND_SKIP and (p.ref, pad.num) not in GND_SKIP)):
                 pins_by_net.setdefault(pad.net, []).append(f"{p.ref}-{pad.pin_name}")
         img = f"IMG_{p.ref}"
         images.append(f"    (image {img}\n" + "\n".join(lines) + "\n    )")
@@ -209,12 +222,15 @@ def write_dsn(parts, path, gnd_links=(), resume=None):
     wire_keep.append(f"    (keepout \"under_U1\" (rect F.Cu {X(u1.x - 7.4)} {Y(u1.y + 8.2)} {X(u1.x + 7.4)} {Y(u1.y - 13)}))")
     u3 = next(p for p in parts if p.ref == "U3")
     wire_keep.append(f"    (keepout \"under_U3\" (rect F.Cu {X(u3.x - 2.08)} {Y(u3.y + 3.6)} {X(u3.x + 2.08)} {Y(u3.y - 3.6)}))")
-    wire_keep.append(f"    (keepout \"dac_gnd\" (rect F.Cu {X(u3.x - 0.8)} {Y(u3.y + 4.9)} {X(u3.x + 0.8)} {Y(u3.y + 3.5)}))")
+    if not ROUTE_GND:
+        wire_keep.append(f"    (keepout \"dac_gnd\" (rect F.Cu {X(u3.x - 0.8)} {Y(u3.y + 4.9)} {X(u3.x + 0.8)} {Y(u3.y + 3.5)}))")
     u4 = next(p for p in parts if p.ref == "U4")
-    wire_keep.append(f"    (keepout \"lp_gnd\" (rect F.Cu {X(u4.x - 0.6)} {Y(u4.y + 0.3)} {X(u4.x + 3.2)} {Y(u4.y - 0.3)}))")
+    if not ROUTE_GND:
+        wire_keep.append(f"    (keepout \"lp_gnd\" (rect F.Cu {X(u4.x - 0.6)} {Y(u4.y + 0.3)} {X(u4.x + 3.2)} {Y(u4.y - 0.3)}))")
     u5 = next(p for p in parts if p.ref == "U5")
     wire_keep.append(f"    (keepout \"under_U5\" (rect F.Cu {X(u5.x - 1.35)} {Y(u5.y + 4.9)} {X(u5.x + 1.35)} {Y(u5.y - 4.9)}))")
-    wire_keep.append(f"    (keepout \"amp_gnd\" (rect F.Cu {X(u5.x - 0.8)} {Y(u5.y - 4.8)} {X(u5.x + 0.8)} {Y(u5.y - 6.9)}))")
+    if not ROUTE_GND:
+        wire_keep.append(f"    (keepout \"amp_gnd\" (rect F.Cu {X(u5.x - 0.8)} {Y(u5.y - 4.8)} {X(u5.x + 0.8)} {Y(u5.y - 6.9)}))")
     for v in vias:
         d, dr = [int(x) / 1000 for x in re.findall(r"_(\d+):(\d+)_", v)[0]]
         cache[v] = (v, f"    (padstack {q(v)}\n      (shape (circle F.Cu {um(d)}))\n      (shape (circle B.Cu {um(d)}))\n      (attach off)\n    )")
@@ -224,7 +240,7 @@ def write_dsn(parts, path, gnd_links=(), resume=None):
     inset = [(e, e), (W - e, e), (W - e, H - e), (e, H - e), (e, e)]
     boundary = [(r, 0), (W - r, 0), (W, r), (W, H - r), (W - r, H), (r, H), (0, H - r), (0, r), (r, 0)]
     wiring = []
-    pre = prewires(parts)
+    pre = prewires(parts) + (body_ground(parts) if ROUTE_GND else [])
     if resume is not None:
         # продолжение: готовая разводка остаётся (Freerouting может её подвинуть), земля — неподвижные препятствия
         rt, rv = resume
@@ -332,7 +348,7 @@ def read_ses(path):
     tracks, vias = [], []
     netout = next(find(routes, "network_out"))
     for net in find(netout, "net"):
-        name = "GND" if net[1].startswith("GNDL") else net[1]
+        name = "GND" if net[1].startswith(("GNDL", "GNDA")) else net[1]
         for w in find(net, "wire"):
             path = next(find(w, "path"))
             layer = "F" if path[1] == "F.Cu" else "B"

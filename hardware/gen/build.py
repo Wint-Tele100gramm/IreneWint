@@ -57,7 +57,7 @@ def route_all(parts):
     """Разводка из SES + дотрассировка, снятие лишних перемычек, расширение дорожек."""
     tracks, vias = route.read_ses(SES)
     # заранее проложенные дорожки (веер ЦАП, перемычка LP5907) — в SES они есть, помечаем как неизменные
-    pre = route.prewires(parts)
+    pre = route.prewires(parts) + (route.body_ground(parts) if route.ROUTE_GND else [])
     for t in tracks:
         if any(t["net"] == p["net"] and all(abs(a - b) < 0.02 for a, b in zip(sorted(t["pts"]), sorted(p["pts"]))) for p in pre):
             t["fixed"] = True
@@ -117,7 +117,8 @@ def main():
         else:
             tracks, vias, nets = route_all(parts)
             json.dump({"tracks": tracks, "vias": vias}, open(state, "w"))
-        tracks += route.body_ground(parts)
+        if not route.ROUTE_GND:          # иначе оси земли уже в разводке (трассировщик вёл их как готовые)
+            tracks += route.body_ground(parts)
         return tracks, vias, nets, gerber.build_pours(parts, tracks, vias)
 
     links = []
