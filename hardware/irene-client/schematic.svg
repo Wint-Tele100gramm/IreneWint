@@ -1212,22 +1212,22 @@
 <text x="402.120" y="187.960" font-size="1.3" text-anchor="start" dominant-baseline="middle" fill="#333" font-weight="normal">L+</text>
 <text x="399.980" y="187.260" font-size="1.0" text-anchor="middle" dominant-baseline="middle" fill="#888" font-weight="normal">1</text>
 <line x1="398.780" y1="187.960" x2="397.510" y2="187.960" stroke="#006000" stroke-width="0.25" stroke-linecap="round"/>
-<text x="397.110" y="187.960" font-size="1.5" text-anchor="end" dominant-baseline="middle" fill="#005000" font-weight="normal">SPK_LP</text>
+<text x="397.110" y="187.960" font-size="1.5" text-anchor="end" dominant-baseline="middle" fill="#005000" font-weight="normal">SPK_RP</text>
 <line x1="401.320" y1="190.500" x2="398.780" y2="190.500" stroke="#8b0000" stroke-width="0.25" stroke-linecap="round"/>
 <text x="402.120" y="190.500" font-size="1.3" text-anchor="start" dominant-baseline="middle" fill="#333" font-weight="normal">L-</text>
 <text x="399.980" y="189.800" font-size="1.0" text-anchor="middle" dominant-baseline="middle" fill="#888" font-weight="normal">2</text>
 <line x1="398.780" y1="190.500" x2="397.510" y2="190.500" stroke="#006000" stroke-width="0.25" stroke-linecap="round"/>
-<text x="397.110" y="190.500" font-size="1.5" text-anchor="end" dominant-baseline="middle" fill="#005000" font-weight="normal">SPK_LN</text>
+<text x="397.110" y="190.500" font-size="1.5" text-anchor="end" dominant-baseline="middle" fill="#005000" font-weight="normal">SPK_RN</text>
 <line x1="401.320" y1="193.040" x2="398.780" y2="193.040" stroke="#8b0000" stroke-width="0.25" stroke-linecap="round"/>
 <text x="402.120" y="193.040" font-size="1.3" text-anchor="start" dominant-baseline="middle" fill="#333" font-weight="normal">R+</text>
 <text x="399.980" y="192.340" font-size="1.0" text-anchor="middle" dominant-baseline="middle" fill="#888" font-weight="normal">3</text>
 <line x1="398.780" y1="193.040" x2="397.510" y2="193.040" stroke="#006000" stroke-width="0.25" stroke-linecap="round"/>
-<text x="397.110" y="193.040" font-size="1.5" text-anchor="end" dominant-baseline="middle" fill="#005000" font-weight="normal">SPK_RP</text>
+<text x="397.110" y="193.040" font-size="1.5" text-anchor="end" dominant-baseline="middle" fill="#005000" font-weight="normal">SPK_LN</text>
 <line x1="401.320" y1="195.580" x2="398.780" y2="195.580" stroke="#8b0000" stroke-width="0.25" stroke-linecap="round"/>
 <text x="402.120" y="195.580" font-size="1.3" text-anchor="start" dominant-baseline="middle" fill="#333" font-weight="normal">R-</text>
 <text x="399.980" y="194.880" font-size="1.0" text-anchor="middle" dominant-baseline="middle" fill="#888" font-weight="normal">4</text>
 <line x1="398.780" y1="195.580" x2="397.510" y2="195.580" stroke="#006000" stroke-width="0.25" stroke-linecap="round"/>
-<text x="397.110" y="195.580" font-size="1.5" text-anchor="end" dominant-baseline="middle" fill="#005000" font-weight="normal">SPK_RN</text>
+<text x="397.110" y="195.580" font-size="1.5" text-anchor="end" dominant-baseline="middle" fill="#005000" font-weight="normal">SPK_LP</text>
 <text x="12.000" y="289.000" font-size="1.8" text-anchor="start" dominant-baseline="middle" fill="#333" font-weight="normal">Плата клиента Ирины v2. Питание 5 В (J1). GPIO: микрофоны SCK 4, WS 5, SD 6; ЦАП DIN 7, BCK 15, LRCK 16; AMP_EN 17 (XSMT + SHDN); LED 18.</text>
 <text x="14.000" y="215.000" font-size="1.8" text-anchor="start" dominant-baseline="middle" fill="#333" font-weight="normal">Разъёма USB на плате нет. Для первой прошивки подпаяться проводами к выводам модуля U1:</text>
 <text x="14.000" y="221.000" font-size="1.8" text-anchor="start" dominant-baseline="middle" fill="#333" font-weight="normal">USB: вывод 13 (IO19, D-), 14 (IO20, D+), GND, питание 5 В на J1;</text>

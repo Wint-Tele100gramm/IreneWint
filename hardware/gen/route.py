@@ -19,7 +19,8 @@ FINE_PARTS = ("U3", "U4")
 VIA = (1.4, 0.6)      # переход: площадка 1,4 мм, отверстие 0,6 мм — под проволочную перемычку
 VIAS = {c: VIA for c in ("default", "supply", "power", "dac", "gnd")}
 ROUTE_GND = True        # земля — обычная цепь: трассировщик связывает все её выводы, заливка — поверх
-GND_SKIP = set()
+GND_SKIP = {("U3", "11"), ("U3", "12"), ("U3", "16"), ("U3", "19")}   # правые земляные выводы ЦАП — только по оси под корпусом:
+                                                                     # иначе земля уходит от них наружу и запирает выводы I2S
 VIA_COST = 200        # «цена» перехода для Freerouting (по умолчанию 50): меньше перемычек
 SPEAKER = {"OUTL_P", "OUTL_N", "OUTR_P", "OUTR_N", "SPK_LP", "SPK_LN", "SPK_RP", "SPK_RN"}
 DAC_NETS = {"DAC_CAPP", "DAC_CAPM", "DAC_VNEG", "DAC_OUTL", "DAC_OUTR", "DAC_LDOO", "I2S_BCK", "I2S_DIN",

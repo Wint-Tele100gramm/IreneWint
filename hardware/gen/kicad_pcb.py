@@ -192,8 +192,7 @@ def write_project(path, nets):
   (constraint clearance (min {DAC_GAP}mm))
   (condition "A.NetClass == 'DAC' && B.NetClass == 'DAC'"))
 
-(rule "vias_not_under_parts"
-  (constraint disallow via)
-  (condition "A.intersectsCourtyard('*')"))
+# Переходы не под корпусами деталей генератор проверяет сам — по контуру корпуса (слой Fab). Правилом по
+# курсу (Courtyard) этого не выразить: курс шире корпуса, и переходы рядом с выводами KiCad счёл бы ошибкой.
 """)
 

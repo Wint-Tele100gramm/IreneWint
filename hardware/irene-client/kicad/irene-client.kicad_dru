@@ -1,11 +1,16 @@
 (version 1)
 
-# Между дорожками и переходами — не меньше 0.3 мм; от дорожки до вывода микросхемы — 0.2 мм
-# (у PCM5102A шаг выводов 0,65 мм, с большим зазором к ним не подойти).
-(rule "track_to_track"
-  (constraint clearance (min 0.3mm))
-  (condition "A.Type == 'Track' && B.Type == 'Track'"))
+# Зазор между дорожками, площадками и переходами разных цепей — не меньше 0.4 мм (правило Default).
+# Исключение — выводы с мелким шагом: ЦАП (TSSOP, 0,65 мм) и LP5907 (SOT-23-5, 0,95 мм): 0.2 мм,
+# между дорожками цепей ЦАП у его выводов — 0.3 мм (класс DAC). Иначе к этим выводам не подойти.
+(rule "fine_pitch"
+  (constraint clearance (min 0.2mm))
+  (condition "A.intersectsCourtyard('U3') || B.intersectsCourtyard('U3') || A.intersectsCourtyard('U4') || B.intersectsCourtyard('U4')"))
 
-(rule "via_to_track"
+(rule "dac_tracks"
   (constraint clearance (min 0.3mm))
-  (condition "A.Type == 'Via' && (B.Type == 'Track' || B.Type == 'Via')"))
+  (condition "A.NetClass == 'DAC' && B.NetClass == 'DAC'"))
+
+
+# Переходы не под корпусами деталей генератор проверяет сам — по контуру корпуса (слой Fab). Правилом по
+# курсу (Courtyard) этого не выразить: курс шире корпуса, и переходы рядом с выводами KiCad счёл бы ошибкой.

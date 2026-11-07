@@ -11,22 +11,23 @@
       },
       "rules": {
         "min_clearance": 0.2,
-        "min_copper_edge_clearance": 0.3,
+        "min_copper_edge_clearance": 0.5,
         "min_hole_clearance": 0.25,
         "min_hole_to_hole": 0.25,
         "min_through_hole_diameter": 0.3,
-        "min_track_width": 0.2,
-        "min_via_annular_width": 0.13,
-        "min_via_diameter": 0.5,
+        "min_track_width": 0.3,
+        "min_via_annular_width": 0.3,
+        "min_via_diameter": 1.2,
         "min_silk_clearance": 0.0,
         "solder_mask_clearance": 0.05,
         "solder_mask_min_width": 0.1
       },
       "track_widths": [
         0.0,
-        0.25,
-        0.4,
-        0.6
+        0.3,
+        0.6,
+        0.8,
+        1.0
       ],
       "via_dimensions": [
         {
@@ -34,12 +35,8 @@
           "drill": 0.0
         },
         {
-          "diameter": 0.6,
-          "drill": 0.3
-        },
-        {
-          "diameter": 0.8,
-          "drill": 0.4
+          "diameter": 1.4,
+          "drill": 0.6
         }
       ]
     }
@@ -52,10 +49,10 @@
     "classes": [
       {
         "name": "Default",
-        "clearance": 0.2,
-        "track_width": 0.25,
-        "via_diameter": 0.6,
-        "via_drill": 0.3,
+        "clearance": 0.4,
+        "track_width": 0.6,
+        "via_diameter": 1.4,
+        "via_drill": 0.6,
         "nets": [],
         "bus_width": 12,
         "diff_pair_gap": 0.25,
@@ -69,16 +66,24 @@
         "wire_width": 6
       },
       {
-        "name": "Supply",
-        "clearance": 0.2,
-        "track_width": 0.3,
-        "via_diameter": 0.6,
-        "via_drill": 0.3,
+        "name": "Power",
+        "clearance": 0.4,
+        "track_width": 0.8,
+        "via_diameter": 1.4,
+        "via_drill": 0.6,
         "nets": [
-          "+3V3",
-          "+3V3_A",
-          "+3V3_D",
-          "+3V3_MIC"
+          "+5V",
+          "+5V_AMP",
+          "OUTL_N",
+          "OUTL_P",
+          "OUTR_N",
+          "OUTR_P",
+          "SPK_LN",
+          "SPK_LP",
+          "SPK_RN",
+          "SPK_RP",
+          "VIN_F",
+          "VIN_RAW"
         ],
         "bus_width": 12,
         "diff_pair_gap": 0.25,
@@ -92,25 +97,24 @@
         "wire_width": 6
       },
       {
-        "name": "Power",
-        "clearance": 0.2,
-        "track_width": 0.6,
-        "via_diameter": 0.8,
-        "via_drill": 0.4,
+        "name": "DAC",
+        "clearance": 0.3,
+        "track_width": 0.3,
+        "via_diameter": 1.4,
+        "via_drill": 0.6,
         "nets": [
-          "+5V",
-          "+5V_AMP",
-          "GND",
-          "OUTL_N",
-          "OUTL_P",
-          "OUTR_N",
-          "OUTR_P",
-          "SPK_LN",
-          "SPK_LP",
-          "SPK_RN",
-          "SPK_RP",
-          "VIN_F",
-          "VIN_RAW"
+          "+3V3_A",
+          "+3V3_D",
+          "AMP_EN",
+          "DAC_CAPM",
+          "DAC_CAPP",
+          "DAC_LDOO",
+          "DAC_OUTL",
+          "DAC_OUTR",
+          "DAC_VNEG",
+          "I2S_BCK",
+          "I2S_DIN",
+          "I2S_LRCK"
         ],
         "bus_width": 12,
         "diff_pair_gap": 0.25,
