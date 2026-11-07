@@ -14,10 +14,10 @@ from placement import W, H, CORNER_R, ANTENNA_KEEPOUT
 POUR_CLEAR = 0.4        # зазор заливки до чужих цепей
 EDGE_CLEAR = 0.4        # от края платы
 MASK_EXP = 0.05         # расширение окон маски
-MIN_POUR = 0.25         # минимальная ширина заливки
+MIN_POUR = 0.5          # минимальная ширина заливки (надёжно травится и дома)
+MIN_AREA = 1.0          # куски заливки меньше 1 мм² убираются
 THERMAL_W = 0.5         # ширина перемычек термобарьера у выводов в отверстиях
-STITCH_STEP = 8.0       # шаг сшивающих переходных отверстий
-STITCH_VIA = (0.6, 0.3)
+from route import VIA as STITCH_VIA   # сшивка — только где без неё остров земли с выводами остался бы без связи
 RES = 40                # пикселей на мм для анализа заливки
 
 
@@ -233,7 +233,14 @@ class Pour:
         k = _disk(int(math.ceil(MIN_POUR * RES / 2)))
         opened = ndimage.binary_opening(raw, structure=k)
         self.raw = raw
-        self.pour = opened | (raw & ndimage.binary_dilation(self.gnd, iterations=1))
+        pour = opened | (raw & ndimage.binary_dilation(self.gnd, iterations=1))
+        # куски меньше MIN_AREA — убрать
+        lab, n = ndimage.label(pour)
+        if n:
+            sizes = ndimage.sum(np.ones_like(lab), lab, range(1, n + 1)) / (RES * RES)
+            small = np.isin(lab, [i + 1 for i, a in enumerate(sizes) if a < MIN_AREA])
+            pour &= ~small
+        self.pour = pour
         self.labels, self.n = ndimage.label(self.pour)
 
     def comps_touching(self, mask):
@@ -310,8 +317,22 @@ def build_pours(parts, tracks, vias):
         main = max(area, key=area.get)
         added = False
         # острова: пробуем пришить переходным отверстием к главной земле другого слоя
-        rv = int(math.ceil((STITCH_VIA[0] / 2 + 0.15) * RES))
+        rv = int(math.ceil((STITCH_VIA[0] / 2 + 0.25) * RES))
         k = _disk(rv)
+        img, dd = _blank()          # переходы не под корпусами деталей
+        from board import body_box
+        for p in parts:
+            b = body_box(p)
+            r = STITCH_VIA[0] / 2
+            if b and b[0] == "rect":
+                dd.rectangle([*_P(b[1] - r, b[2] - r), *_P(b[3] + r, b[4] + r)], fill=1)
+            elif b:
+                _r_circle(dd, b[1], b[2], 2 * (b[3] + r))
+        no_via = _arr(img)
+        with_items = set()
+        for i, (kind, obj, m, layers) in enumerate(gnd_items):
+            if kind == "pad":
+                with_items.add(f(("i", i)))
         for side, P, O in (("F", F, B), ("B", B, F)):
             omain = np.zeros_like(O.pour)
             for c in range(1, O.n + 1):
@@ -319,44 +340,14 @@ def build_pours(parts, tracks, vias):
                     omain |= O.labels == c
             okern = ndimage.binary_erosion(omain, structure=k)
             for c in range(1, P.n + 1):
-                if f((side, c)) == main:
-                    continue
-                isl = ndimage.binary_erosion(P.labels == c, structure=k) & okern
+                if f((side, c)) == main or f((side, c)) not in with_items:
+                    continue          # остров без земляных выводов просто убирается
+                isl = ndimage.binary_erosion(P.labels == c, structure=k) & okern & ~no_via
                 ys, xs = np.nonzero(isl)
                 if len(xs):
                     j = len(xs) // 2
                     stitch.append({"net": "GND", "x": xs[j] / RES, "y": ys[j] / RES, "d": STITCH_VIA[0], "drill": STITCH_VIA[1]})
                     added = True
-        # регулярная сшивка там, где обе заливки — главная земля
-        if not any(s.get("grid") for s in stitch):
-            both = np.zeros_like(F.pour)
-            mF = np.zeros_like(F.pour)
-            for c in range(1, F.n + 1):
-                if f(("F", c)) == main:
-                    mF |= F.labels == c
-            mB = np.zeros_like(B.pour)
-            for c in range(1, B.n + 1):
-                if f(("B", c)) == main:
-                    mB |= B.labels == c
-            k2 = _disk(int(math.ceil((STITCH_VIA[0] / 2 + 0.35) * RES)))
-            both = ndimage.binary_erosion(mF, structure=k2) & ndimage.binary_erosion(mB, structure=k2)
-            step = int(STITCH_STEP * RES)
-            taken = []
-            for yy in range(step // 2, both.shape[0], step):
-                for xx in range(step // 2, both.shape[1], step):
-                    # ищем ближайшую подходящую точку в клетке
-                    cell = both[max(0, yy - step // 2):yy + step // 2, max(0, xx - step // 2):xx + step // 2]
-                    ys, xs = np.nonzero(cell)
-                    if not len(xs):
-                        continue
-                    j = np.argmin((ys - step // 2) ** 2 + (xs - step // 2) ** 2)
-                    x = (max(0, xx - step // 2) + xs[j]) / RES
-                    y = (max(0, yy - step // 2) + ys[j]) / RES
-                    if any(math.hypot(x - a, y - b) < STITCH_STEP * 0.6 for a, b in taken):
-                        continue
-                    taken.append((x, y))
-                    stitch.append({"net": "GND", "x": x, "y": y, "d": STITCH_VIA[0], "drill": STITCH_VIA[1], "grid": True})
-            added = True
         if not added:
             break
     # итог: что вырезать (полоски и неподключённые острова), список земляных выводов без связи

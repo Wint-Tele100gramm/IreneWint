@@ -2,13 +2,23 @@
 
 import math
 
+EPAD = {}      # центр сетки площадок «41» модуля (заполняет set_parts)
+
+
+def set_parts(parts):
+    for p in parts:
+        if p.ref == "U1":
+            pads = [pd for pd in p.pads if pd.num == "41"]
+            EPAD["U1"] = (sum(pd.x for pd in pads) / len(pads), sum(pd.y for pd in pads) / len(pads))
+
 
 def _pad_contains(pad, x, y, layer, tol=0.02):
     if layer not in pad.layers or pad.npth:
         return False
     if pad.ref == "U1" and pad.num == "41":
         # центральная площадка модуля: трассировщик видел её как один квадрат 3,7 мм
-        return abs(x - 67.5) <= 1.85 + tol and abs(y - 15.21) <= 1.85 + tol
+        cx, cy = EPAD.get("U1", (pad.x, pad.y))
+        return abs(x - cx) <= 1.85 + tol and abs(y - cy) <= 1.85 + tol
     if pad.shape in ("circle", "oval"):
         return _capsule_dist(pad, x, y) <= tol
     return abs(x - pad.x) <= pad.w / 2 + tol and abs(y - pad.y) <= pad.h / 2 + tol
@@ -60,6 +70,7 @@ class DSU:
 
 def connectivity(parts, tracks, vias, nets):
     """Вернуть {цепь: число несвязанных групп - 1} для цепей, которые соединены не полностью."""
+    set_parts(parts)
     pads = [pd for p in parts for pd in p.pads if pd.net]
     by_net = {}
     for i, pd in enumerate(pads):
@@ -126,61 +137,102 @@ def connectivity(parts, tracks, vias, nets):
     return bad
 
 
-PAD_GAP = 0.19   # дорожка — вывод (у TSSOP шаг 0,65 мм)
+def pad_gap(pad):
+    """Нужный зазор от чужой дорожки/перехода до площадки: 0,4 мм, у выводов с мелким шагом — 0,2 мм."""
+    from route import CLEARANCE, PAD_CLEARANCE, FINE_PARTS
+    return PAD_CLEARANCE if pad.ref in FINE_PARTS else CLEARANCE
 
 
-def clearances(parts, tracks, vias, min_gap=0.29):
-    """Нарушения зазора дорожка-площадка, дорожка-дорожка, переход-всё между разными цепями."""
+def pad_dist(pd, x1, y1, x2, y2):
+    """Расстояние от отрезка до площадки (до её края)."""
+    if pd.shape in ("circle", "oval"):
+        r = min(pd.w, pd.h) / 2
+        lx, ly = pd.w / 2 - r, pd.h / 2 - r
+        return _seg_seg((x1, y1, x2, y2), (pd.x - lx, pd.y - ly, pd.x + lx, pd.y + ly)) - r
+    hw, hh = pd.w / 2, pd.h / 2
+    # отрезок против прямоугольника: пересечение — 0, иначе минимум по рёбрам
+    corners = [(pd.x - hw, pd.y - hh), (pd.x + hw, pd.y - hh), (pd.x + hw, pd.y + hh), (pd.x - hw, pd.y + hh)]
+    for x, y in ((x1, y1), (x2, y2)):
+        if abs(x - pd.x) <= hw and abs(y - pd.y) <= hh:
+            return 0.0
+    best = 1e9
+    for a, b in zip(corners, corners[1:] + corners[:1]):
+        best = min(best, _seg_seg((x1, y1, x2, y2), (*a, *b)))
+    return best
+
+
+def track_gap(a, b):
+    from route import CLEARANCE, DAC_GAP, DAC_NETS
+    dac = DAC_NETS | {"GND"}        # земля ЦАП под корпусом идёт между его выводами
+    return DAC_GAP if (a in dac and b in dac and (a in DAC_NETS or b in DAC_NETS)) else CLEARANCE
+
+
+def clearances(parts, tracks, vias, tol=0.005):
+    """Нарушения зазоров между разными цепями: дорожка-площадка, дорожка-дорожка, переход-всё.
+    Земля (GND) — тоже цепь: её дорожки и переходы проверяются наравне."""
     errs = []
     pads = [pd for p in parts for pd in p.pads if not pd.npth]
-
-    def pad_dist(pd, x1, y1, x2, y2):
-        # расстояние от отрезка до прямоугольника площадки (приближённо: до прямоугольника)
-        if pd.shape in ("circle", "oval"):
-            r = min(pd.w, pd.h) / 2
-            lx, ly = pd.w / 2 - r, pd.h / 2 - r
-            return _seg_seg((x1, y1, x2, y2), (pd.x - lx, pd.y - ly, pd.x + lx, pd.y + ly)) - r
-        hw, hh = pd.w / 2, pd.h / 2
-        best = 1e9
-        n = max(2, int(math.hypot(x2 - x1, y2 - y1) / 0.05) + 1)
-        for i in range(n + 1):
-            x = x1 + (x2 - x1) * i / n
-            y = y1 + (y2 - y1) * i / n
-            dx = max(abs(x - pd.x) - hw, 0)
-            dy = max(abs(y - pd.y) - hh, 0)
-            best = min(best, math.hypot(dx, dy))
-        return best
-
+    holes = [pd for p in parts for pd in p.pads if pd.npth]
     for t in tracks:
         x1, y1, x2, y2 = t["pts"]
-        bx1, bx2 = min(x1, x2) - 3, max(x1, x2) + 3
-        by1, by2 = min(y1, y2) - 3, max(y1, y2) + 3
+        bx1, bx2 = min(x1, x2) - 4, max(x1, x2) + 4
+        by1, by2 = min(y1, y2) - 4, max(y1, y2) + 4
         for pd in pads:
             if pd.net == t["net"] or t["layer"] not in pd.layers:
                 continue
             if not (bx1 < pd.x < bx2 and by1 < pd.y < by2):
                 continue
             g = pad_dist(pd, x1, y1, x2, y2) - t["w"] / 2
-            if g < min(min_gap, PAD_GAP):
+            if g < pad_gap(pd) - tol:
                 errs.append(("track-pad", t["net"], f"{pd.ref}.{pd.num}", round(g, 3), (round(x1, 2), round(y1, 2))))
+        for pd in holes:
+            g = _seg_dist(pd.x, pd.y, x1, y1, x2, y2) - pd.w / 2 - t["w"] / 2
+            if g < 0.4 - tol:
+                errs.append(("track-hole", t["net"], pd.ref, round(g, 3), (round(x1, 2), round(y1, 2))))
     for i, a in enumerate(tracks):
         for b in tracks[i + 1:]:
             if a["net"] == b["net"] or a["layer"] != b["layer"]:
                 continue
             g = _seg_seg(a["pts"], b["pts"]) - a["w"] / 2 - b["w"] / 2
-            if g < min_gap:
-                errs.append(("track-track", a["net"], b["net"], round(g, 3), a["pts"][:2]))
+            if g < track_gap(a["net"], b["net"]) - tol:
+                errs.append(("track-track", a["net"], b["net"], round(g, 3), tuple(round(v, 2) for v in a["pts"][:2])))
+    from route import CLEARANCE
     for v in vias:
         for t in tracks:
             if t["net"] == v["net"]:
                 continue
             g = _seg_dist(v["x"], v["y"], *t["pts"]) - v["d"] / 2 - t["w"] / 2
-            if g < min_gap:
-                errs.append(("via-track", v["net"], t["net"], round(g, 3), (v["x"], v["y"])))
+            if g < CLEARANCE - tol:
+                errs.append(("via-track", v["net"], t["net"], round(g, 3), (round(v["x"], 2), round(v["y"], 2))))
         for pd in pads:
             if pd.net == v["net"]:
                 continue
             g = pad_dist(pd, v["x"], v["y"], v["x"], v["y"]) - v["d"] / 2
-            if g < min(min_gap, PAD_GAP):
-                errs.append(("via-pad", v["net"], f"{pd.ref}.{pd.num}", round(g, 3), (v["x"], v["y"])))
+            if g < CLEARANCE - tol:
+                errs.append(("via-pad", v["net"], f"{pd.ref}.{pd.num}", round(g, 3), (round(v["x"], 2), round(v["y"], 2))))
+    for i, a in enumerate(vias):
+        for b in vias[i + 1:]:
+            if a["net"] != b["net"] and math.hypot(a["x"] - b["x"], a["y"] - b["y"]) - (a["d"] + b["d"]) / 2 < CLEARANCE - tol:
+                errs.append(("via-via", a["net"], b["net"], 0, (round(a["x"], 2), round(a["y"], 2))))
     return errs
+
+
+def vias_under_parts(parts, vias, margin=0.0):
+    """Переходы под корпусами деталей."""
+    from board import body_box
+    bad = []
+    for v in vias:
+        r = v["d"] / 2
+        for p in parts:
+            b = body_box(p)
+            if not b:
+                continue
+            if b[0] == "rect":
+                _, x1, y1, x2, y2 = b
+                dx = max(x1 - v["x"], 0, v["x"] - x2)
+                dy = max(y1 - v["y"], 0, v["y"] - y2)
+                if math.hypot(dx, dy) < r + margin - 1e-6:
+                    bad.append((p.ref, round(v["x"], 2), round(v["y"], 2)))
+            elif math.hypot(v["x"] - b[1], v["y"] - b[2]) < b[3] + r + margin:
+                bad.append((p.ref, round(v["x"], 2), round(v["y"], 2)))
+    return bad

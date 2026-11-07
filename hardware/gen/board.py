@@ -217,3 +217,24 @@ def nets_of(parts):
             if pad.net:
                 nets.setdefault(pad.net, []).append(pad)
     return nets
+
+
+def body_box(p):
+    """Корпус детали (по контуру F.Fab), а не курс: «под деталью» — это под её корпусом.
+    -> ("rect", x1, y1, x2, y2) | ("circle", cx, cy, r) | None."""
+    xs, ys = [], []
+    for it in p.fab:
+        if it[0] == "line":
+            xs += [it[1], it[3]]
+            ys += [it[2], it[4]]
+        elif it[0] == "circle":
+            _, cx, cy, r, _w = it
+            xs += [cx - r, cx + r]
+            ys += [cy - r, cy + r]
+    if xs:
+        return ("rect", min(xs), min(ys), max(xs), max(ys))
+    if p.court:
+        return ("rect", *p.court)
+    if p.court_circle:
+        return ("circle", *p.court_circle)
+    return None

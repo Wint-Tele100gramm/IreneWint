@@ -22,3 +22,4 @@ __pycache__/
 
 # журнал Freerouting
 /hardware/gen/logs/
+/hardware/gen/_routed_state.json

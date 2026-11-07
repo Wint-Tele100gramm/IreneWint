@@ -10,12 +10,14 @@ from scipy import ndimage
 
 from placement import W, H, ANTENNA_KEEPOUT
 
+from route import CLEARANCE, PAD_CLEARANCE, FINE_PARTS, VIA
+
 RES = 20                     # клеток на мм
-GAP_TRACK = 0.35             # до чужих дорожек и переходов (с запасом на шаг сетки)
-GAP_PAD = 0.25               # до чужих выводов
-EDGE = 0.4
-VIA = (0.6, 0.3)
-VIA_COST = 60
+GAP_TRACK = CLEARANCE + 0.1  # до чужих дорожек и переходов (с запасом на шаг сетки)
+GAP_PAD = CLEARANCE + 0.1    # до чужих выводов
+GAP_FINE = PAD_CLEARANCE + 0.1   # до выводов с мелким шагом (ЦАП, LP5907)
+EDGE = 0.5
+VIA_COST = 400               # переход «стоит» как 20 мм дорожки: перемычек — как можно меньше
 
 
 def _img():
@@ -57,14 +59,14 @@ def _maps(parts, tracks, vias, net, w):
         for p in parts:
             for pd in p.pads:
                 if pd.npth:
-                    _circle(bd, pd.x, pd.y, pd.w + 2 * (0.3 + w / 2))
+                    _circle(bd, pd.x, pd.y, pd.w + 2 * (0.5 + w / 2))
                     continue
                 if side not in pd.layers:
                     continue
                 if pd.net == net:
                     _pad(od, pd, 0)
                 else:
-                    _pad(bd, pd, g_p)
+                    _pad(bd, pd, (GAP_FINE + w / 2) if pd.ref in FINE_PARTS else g_p)
         for t in tracks:
             if t["layer"] != side:
                 continue
@@ -77,6 +79,15 @@ def _maps(parts, tracks, vias, net, w):
                 _circle(od, v["x"], v["y"], v["d"])
             else:
                 _circle(bd, v["x"], v["y"], v["d"] + 2 * g_t)
+        if side == "F" and net != "GND":
+            # под модулем, ЦАП и усилителем — только их земля (как запреты в DSN)
+            for p in parts:
+                if p.ref == "U1":
+                    bd.rectangle([*_P(p.x - 7.4 - w / 2, p.y - 13), *_P(p.x + 7.4 + w / 2, p.y + 8.2 + w / 2)], fill=1)
+                elif p.ref == "U3":
+                    bd.rectangle([*_P(p.x - 2.08 - w / 2, p.y - 3.6), *_P(p.x + 2.08 + w / 2, p.y + 4.9 + w / 2)], fill=1)
+                elif p.ref == "U5":
+                    bd.rectangle([*_P(p.x - 1.35 - w / 2, p.y - 6.9 - w / 2), *_P(p.x + 1.35 + w / 2, p.y + 4.9)], fill=1)
         kx1, ky1, kx2, ky2 = ANTENNA_KEEPOUT
         bd.rectangle([*_P(kx1 - w / 2 - 0.1, ky1), *_P(kx2, ky2 + w / 2 + 0.1)], fill=1)
         b = np.array(bi, dtype=bool)
@@ -102,13 +113,26 @@ def _groups_cells(group, side, w):
     return np.array(im, dtype=bool)
 
 
-def connect(parts, tracks, vias, net, groups, w, dst_masks=None):
+def connect(parts, tracks, vias, net, groups, w, dst_masks=None, allow_vias=True):
     """Соединить группы выводов одной цепи. groups — списки площадок. Добавляет в tracks/vias. True, если удалось.
     dst_masks — {"F": маска, "B": маска} цели вместо остальных групп (например, основная заливка земли)."""
     blocked, _ = _maps(parts, tracks, vias, net, w)
     # переход ставится там, где свободно на обоих слоях с запасом на его радиус
     vr = int(math.ceil((VIA[0] / 2 - w / 2) * RES))
     via_ok = ~ndimage.binary_dilation(blocked["F"] | blocked["B"], iterations=max(vr, 1))
+    # переходы — не под корпусами деталей
+    from board import body_box
+    im, d = _img()
+    for p in parts:
+        b = body_box(p)
+        r = VIA[0] / 2
+        if b and b[0] == "rect":
+            d.rectangle([*_P(b[1] - r, b[2] - r), *_P(b[3] + r, b[4] + r)], fill=1)
+        elif b:
+            _circle(d, b[1], b[2], 2 * (b[3] + r))
+    via_ok &= ~np.array(im, dtype=bool)
+    if not allow_vias:
+        via_ok[:] = False
     src = {s: _groups_cells(groups[0], s, w) for s in "FB"}
     dst = {s: np.zeros_like(src[s]) for s in "FB"}
     if dst_masks is not None:
@@ -218,3 +242,96 @@ def _emit(run, out, net, w):
     side = "F" if run[0][0] == 0 else "B"
     for a, b in zip(keep, keep[1:]):
         out.append({"net": net, "layer": side, "w": w, "pts": (a[0], a[1], b[0], b[1])})
+
+
+def rip_and_route(parts, tracks, vias, net, nets_of, width_of, log=print):
+    """Связь не прокладывается — мешает чужая дорожка. Снимаем участок одной из соседних цепей поблизости,
+    прокладываем нашу связь, затем заново доводим снятую цепь. Не вышло — всё возвращаем как было."""
+    from check import connectivity, _seg_seg
+    groups = connectivity(parts, tracks, vias, nets_of).get(net)
+    if not groups:
+        return True
+    a, b = min(((p, q) for p in groups[0] for g in groups[1:] for q in g),
+               key=lambda pq: math.hypot(pq[0].x - pq[1].x, pq[0].y - pq[1].y))
+    line = (a.x, a.y, b.x, b.y)
+    near = {}
+    for i, t in enumerate(tracks):
+        if t["net"] in (net, "GND"):
+            continue
+        if _seg_seg(line, t["pts"]) < 1.5:
+            near.setdefault(t["net"], []).append(i)
+    for other, idx in sorted(near.items(), key=lambda kv: len(kv[1])):
+        bt, bv = [dict(t) for t in tracks], [dict(v) for v in vias]
+        for i in sorted(idx, reverse=True):
+            del tracks[i]
+        ok = True
+        for n in (net, other):
+            g = connectivity(parts, tracks, vias, nets_of).get(n)
+            while g:
+                if not any(connect(parts, tracks, vias, n, g, w) for w in width_of(n)):
+                    ok = False
+                    break
+                g = connectivity(parts, tracks, vias, nets_of).get(n)
+            if not ok:
+                break
+        if ok:
+            log(f"  переразведено: {net} (сняли и вернули участок {other})")
+            return True
+        tracks[:], vias[:] = bt, bv
+    return False
+
+
+def reduce_vias(parts, tracks, vias, nets_of, width_of, log=print, full=False):
+    """Убрать перемычки: для каждой цепи с переходами снимаем её участки на нижнем слое и сами переходы
+    и пробуем соединить заново только по верхнему слою (без переходов). Вышло — оставляем."""
+    from check import connectivity
+    removed = 0
+    for net in sorted({v["net"] for v in vias if v["net"] != "GND"}):
+        bt, bv = [dict(t) for t in tracks], [dict(v) for v in vias]
+        tracks[:] = [t for t in tracks if not (t["net"] == net and (full or t["layer"] == "B") and not t.get("fixed"))]
+        vias[:] = [v for v in vias if v["net"] != net]
+        ok = True
+        g = connectivity(parts, tracks, vias, nets_of).get(net)
+        while g:
+            if not any(connect(parts, tracks, vias, net, g, w, allow_vias=False) for w in width_of(net)):
+                ok = False
+                break
+            g = connectivity(parts, tracks, vias, nets_of).get(net)
+        before = sum(1 for v in bv if v["net"] == net)
+        if ok:
+            removed += before
+            log(f"  без перемычек: {net} (-{before})")
+        else:
+            tracks[:], vias[:] = bt, bv
+    return removed
+
+
+def rip_gnd(parts, tracks, vias, pad, masks, nets_of, width_of, log=print, reach=3.0):
+    """Земляной вывод заперт чужими дорожками: снимаем участок соседней цепи у вывода, выводим землю
+    к заливке, снятую цепь доводим заново. Не вышло — возвращаем как было."""
+    from check import connectivity, _seg_dist
+    near = {}
+    for i, t in enumerate(tracks):
+        if t["net"] == "GND" or t.get("fixed") or t["layer"] not in pad.layers:
+            continue
+        d = min(_seg_dist(pad.x, pad.y, *t["pts"]), 99)
+        if d < reach:
+            near.setdefault(t["net"], []).append(i)
+    for other, idx in sorted(near.items(), key=lambda kv: len(kv[1])):
+        bt, bv = [dict(t) for t in tracks], [dict(v) for v in vias]
+        for i in sorted(idx, reverse=True):
+            del tracks[i]
+        ok = any(connect(parts, tracks, vias, "GND", [[pad]], w, dst_masks=masks, allow_vias=av)
+                 for av in (False, True) for w in (0.6, 0.4))
+        if ok:
+            g = connectivity(parts, tracks, vias, nets_of).get(other)
+            while g:
+                if not any(connect(parts, tracks, vias, other, g, w) for w in width_of(other)):
+                    ok = False
+                    break
+                g = connectivity(parts, tracks, vias, nets_of).get(other)
+        if ok:
+            log(f"  земля {pad.ref}.{pad.num}: переразведено {other}")
+            return True
+        tracks[:], vias[:] = bt, bv
+    return False

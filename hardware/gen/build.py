@@ -9,6 +9,7 @@
 
 import csv
 import io
+import math
 import os
 import shutil
 import subprocess
@@ -23,6 +24,7 @@ import check  # noqa: E402
 import finish  # noqa: E402
 import gerber  # noqa: E402
 import render  # noqa: E402
+import widen  # noqa: E402
 import route  # noqa: E402
 from placement import W, H, SILK_TEXT, PIN_LABELS  # noqa: E402
 
@@ -51,55 +53,130 @@ def silk_strokes(items, side):
     return strokes
 
 
+def route_all(parts):
+    """Разводка из SES + дотрассировка, снятие лишних перемычек, расширение дорожек."""
+    tracks, vias = route.read_ses(SES)
+    # заранее проложенные дорожки (веер ЦАП, перемычка LP5907) — в SES они есть, помечаем как неизменные
+    pre = route.prewires(parts)
+    for t in tracks:
+        if any(t["net"] == p["net"] and all(abs(a - b) < 0.02 for a, b in zip(sorted(t["pts"]), sorted(p["pts"]))) for p in pre):
+            t["fixed"] = True
+    nets = board.nets_of(parts)
+
+    def widths(n):
+        return (route.WIDTH[route.net_class(n)], 0.4, 0.3)
+    # дотрассировка того, что Freerouting не довёл
+    for n, groups in check.connectivity(parts, tracks, vias, nets).items():
+        if n == "GND":
+            continue
+        while groups:
+            if not any(finish.connect(parts, tracks, vias, n, groups, w) for w in widths(n)):
+                break
+            print("  дотрассировано:", n)
+            groups = check.connectivity(parts, tracks, vias, nets).get(n)
+    for n in [n for n in check.connectivity(parts, tracks, vias, nets) if n != "GND"]:
+        finish.rip_and_route(parts, tracks, vias, n, nets, widths)
+    print("Убираю лишние перемычки…")
+    finish.reduce_vias(parts, tracks, vias, nets, widths)
+    print("  расширено дорожек:", widen.widen(parts, tracks, vias), "| доля длины по ширине, %:", widen.report(tracks))
+    return tracks, vias, nets
+
+
 def main():
     os.makedirs(OUT, exist_ok=True)
     parts = board.load_parts()
     bad = board.check_overlaps(parts)
     if bad:
         sys.exit(f"Детали перекрываются: {bad}")
-    if "--route" in sys.argv or not os.path.exists(SES):
+    import json
+    state = os.path.join(HERE, "_routed_state.json")
+    links_file = os.path.join(HERE, "gnd_links.json")
+    by = {(pd.ref, pd.num): pd for p in parts for pd in p.pads}
+
+    def freerouting(links):
         work = os.path.join(OUT, "_route")
         os.makedirs(work, exist_ok=True)
         dsn = os.path.join(work, NAME + ".dsn")
-        route.write_dsn(parts, dsn)
+        route.write_dsn(parts, dsn, links)
         jar = os.path.join(board.EXT, "freerouting19.jar")
-        cmd = ["xvfb-run", "-a", "java", "-jar", jar, "-de", dsn, "-do", SES, "-mp", "200"]
-        print("Трассировка…", " ".join(cmd))
+        cmd = ["xvfb-run", "-a", "java", "-jar", jar, "-de", dsn, "-do", SES, "-mp", "100"]
+        print("Трассировка…", " ".join(cmd), f"(связей земли: {len(links)})")
         subprocess.run(cmd, check=True, capture_output=True)
         shutil.rmtree(work, ignore_errors=True)
-    tracks, vias = route.read_ses(SES)
-    nets = board.nets_of(parts)
-    # дотрассировка того, что Freerouting не довёл
-    for n, groups in check.connectivity(parts, tracks, vias, nets).items():
-        if n == "GND":
-            continue
-        w = route.WIDTH[route.net_class(n)] if route.net_class(n) != "power" else 0.4
-        while groups:
-            if not finish.connect(parts, tracks, vias, n, groups, w):
+
+    def routed(links, fresh):
+        if fresh:
+            freerouting(links)
+        if "--reuse" in sys.argv and os.path.exists(state) and not fresh:
+            st = json.load(open(state))
+            tracks, vias = st["tracks"], st["vias"]
+            for t in tracks:
+                t["pts"] = tuple(t["pts"])
+            print("Разводка — из", state)
+            nets = board.nets_of(parts)
+        else:
+            tracks, vias, nets = route_all(parts)
+            json.dump({"tracks": tracks, "vias": vias}, open(state, "w"))
+        tracks += route.body_ground(parts)
+        return tracks, vias, nets, gerber.build_pours(parts, tracks, vias)
+
+    links = []
+    if os.path.exists(links_file):
+        links = [(by[tuple(a)], by[tuple(b)]) for a, b in json.load(open(links_file))]
+    if "--route" in sys.argv or not os.path.exists(SES):
+        # зажатые земляные выводы: связь с ближайшим связанным земляным выводом — и трассировка заново
+        links = []
+        passes = int(os.environ.get("GND_PASSES", "1"))
+        for it in range(passes):
+            tracks, vias, nets, pours = routed(links, True)
+            orph = sorted({o for o in pours["orphans"] if not o.startswith("U1.41")})
+            print(f"  проход {it + 1}: переходов {len(vias)}, земляные выводы без связи: {orph or 'нет'}")
+            if not orph or it == passes - 1:
                 break
-            print("  дотрассировано:", n)
-            groups = check.connectivity(parts, tracks, vias, nets).get(n)
+            used = {(a.ref, a.num) for pair in links for a in pair}
+            bad = set(orph) | set(pours["orphans"])
+            for o in orph:
+                a = by[tuple(o.split(".", 1))]
+                cand = [pd for (r, n), pd in by.items() if pd.net == "GND" and not pd.npth and f"{r}.{n}" not in bad
+                        and (r, n) not in used and r != a.ref and (pd.layers & a.layers) and not (r == "U1" and n == "41")]
+                if not cand or (a.ref, a.num) in used:
+                    continue
+                b = min(cand, key=lambda pd: math.hypot(pd.x - a.x, pd.y - a.y))
+                links.append((a, b))
+                used |= {(a.ref, a.num), (b.ref, b.num)}
+        json.dump([[[a.ref, a.num], [b.ref, b.num]] for a, b in links], open(links_file, "w"))
+    else:
+        tracks, vias, nets, pours = routed(links, False)
     unrouted = {n: g for n, g in check.connectivity(parts, tracks, vias, nets).items() if n != "GND"}
     for n, groups in unrouted.items():
         print("НЕ РАЗВЕДЕНО:", n, [[f"{p.ref}.{p.num}" for p in g] for g in groups])
-    errs = check.clearances(parts, tracks, vias)
-    for e in errs:
-        print("ЗАЗОР:", e)
     print("Заливка земли…")
-    pours = gerber.build_pours(parts, tracks, vias)
-    if pours["orphans"]:
-        print("  выводы земли без связи:", pours["orphans"], "— добавляю переходы на нижний слой")
-        route.gnd_fanout(parts, tracks, vias, sorted(set(pours["orphans"])))
-        pours = gerber.build_pours(parts, tracks, vias)
+    for _ in range(3):
+        if not pours["orphans"]:
+            break
+        print("  выводы земли без связи:", pours["orphans"])
+        done = set()
         for pid in sorted(set(pours["orphans"])):
+            if pid in done:
+                continue
+            done.add(pid)
             ref, num = pid.split(".", 1)
             pad = next(pd for p in parts for pd in p.pads if pd.ref == ref and pd.num == num)
-            if finish.connect(parts, tracks, vias, "GND", [[pad]], 0.3,
-                              dst_masks={s: pours["pours"][s + "_keep"] for s in "FB"}):
+            masks = {s: pours["pours"][s + "_keep"] for s in "FB"}
+            if any(finish.connect(parts, tracks, vias, "GND", [[pad]], w, dst_masks=masks, allow_vias=av)
+                   for av in (False, True) for w in (0.6, 0.4, 0.3)):
                 print("  выведен на землю дорожкой:", pid)
-        if pours["orphans"]:
-            pours = gerber.build_pours(parts, tracks, vias)
-    print(f"  сшивающих переходов: {len(pours['stitch'])}; земляные выводы без связи: {pours['orphans'] or 'нет'}")
+            elif finish.rip_gnd(parts, tracks, vias, pad, masks, nets, lambda n: (route.WIDTH[route.net_class(n)], 0.4, 0.3)):
+                print("  выведен на землю с переразводкой соседней цепи:", pid)
+        pours = gerber.build_pours(parts, tracks, vias)
+    errs = check.clearances(parts, tracks, vias + pours["stitch"])
+    for e in errs:
+        print("ЗАЗОР:", e)
+    under = check.vias_under_parts(parts, vias + pours["stitch"])
+    for u in under:
+        print("ПЕРЕХОД ПОД ДЕТАЛЬЮ:", u)
+    print(f"  переходов: трассировка {len(vias)}, сшивка земли {len(pours['stitch'])}; "
+          f"земляные выводы без связи: {pours['orphans'] or 'нет'}")
     texts = silk_items(parts)
     layers = {
         f"{NAME}-F_Cu.gtl": gerber.copper_layer("F", parts, tracks, vias, pours),
@@ -136,7 +213,8 @@ def main():
     write_bom(parts)
     write_cpl(parts)
     import lay6_export
-    lay6_export.write(os.path.join(OUT, NAME + ".lay6"), parts, tracks, vias, pours["stitch"], texts)
+    cut = [(sd, outer) for sd in "FB" for outer, _ in gerber.pour_polygons(pours["remove"][sd])]
+    lay6_export.write(os.path.join(OUT, NAME + ".lay6"), parts, tracks, vias, pours["stitch"], texts, cutouts=cut)
     print(f"Sprint Layout 6: {NAME}.lay6")
     # картинки
     all_vias = vias + pours["stitch"]

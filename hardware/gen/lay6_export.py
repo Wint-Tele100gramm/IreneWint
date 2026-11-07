@@ -4,8 +4,8 @@
 # Заливка земли в Sprint Layout — своя («Массив» / ground plane): включена на обоих слоях, каждый объект
 # хранит зазор до неё. У объектов цепи GND зазор 0 — они сливаются с массивом (дорожки, переходы,
 # SMD-выводы), выводы в отверстиях подключаются термобарьером 0,5 мм. У остальных — зазор 0,4 мм, как в
-# Gerber. Sprint Layout считает массив сам: результат близок к нашей заливке, но островки он не удаляет —
-# после открытия стоит посмотреть.
+# Gerber. Sprint Layout считает массив сам; там, где наша заливка убрала острова и куски меньше 1 мм²,
+# стоят вырезы массива — Sprint Layout их тоже не зальёт.
 #
 # Координаты Sprint Layout: 1/10000 мм, ось Y вверх, плата занимает x 0…size_x, y −size_y…0.
 
@@ -90,7 +90,7 @@ def text(s, x, y, h, layer, mirror=False, center=False, visible=True, comp=0, ki
                 tht_shape=kind, component_id=comp, text=s, children=children)
 
 
-def build(parts, tracks, vias, stitch, silk_texts, name="Irene client v2"):
+def build(parts, tracks, vias, stitch, silk_texts, name="Irene client v3", cutouts=()):
     objs = []
     # ---------------- контур платы
     outline = board_outline_pts(0, n=12)
@@ -101,6 +101,10 @@ def build(parts, tracks, vias, stitch, silk_texts, name="Irene client v2"):
     for layer in (lay6.C1, lay6.C2):
         objs.append(_obj(lay6.POLY, layer, line_width=1000, rotation=1000, mirror=1, keepout=1, clearance=0,
                          points=[P(x, y) for x, y in rect]))
+    # ---------------- вырезы массива там, где наша заливка убрала острова и мелкие куски
+    for side, pts in cutouts:
+        objs.append(_obj(lay6.POLY, lay6.C1 if side == "F" else lay6.C2, line_width=0, rotation=0, mirror=1,
+                         keepout=1, clearance=0, points=[P(x, y) for x, y in pts] + [P(*pts[0])]))
     # ---------------- детали
     for cid, p in enumerate(parts, 1):
         bottom = p.side == "B"
@@ -166,8 +170,8 @@ def build(parts, tracks, vias, stitch, silk_texts, name="Irene client v2"):
             "tail": b""}
 
 
-def write(path, parts, tracks, vias, stitch, silk_texts):
-    data = lay6.write(build(parts, tracks, vias, stitch, silk_texts))
+def write(path, parts, tracks, vias, stitch, silk_texts, cutouts=()):
+    data = lay6.write(build(parts, tracks, vias, stitch, silk_texts, cutouts=cutouts))
     back = lay6.read(data)                       # самопроверка: файл читается тем же разбором, что и Sprint Layout
     assert lay6.write(back) == data
     with open(path, "wb") as f:

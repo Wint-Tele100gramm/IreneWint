@@ -7,21 +7,104 @@ import subprocess
 from placement import W, H, ANTENNA_KEEPOUT
 from design import POWER_NETS, SUPPLY_NETS
 
-CLEARANCE = 0.3   # зазор между проводниками (по просьбе: 0,3–0,5 мм)
-WIDTH = {"default": 0.25, "supply": 0.3, "power": 0.6}
-PAD_CLEARANCE = 0.2   # от дорожки до вывода микросхемы: у TSSOP шаг 0,65 мм, больше не войти
-VIAS = {"default": (0.6, 0.3), "supply": (0.6, 0.3), "power": (0.8, 0.4)}
+# Правила (версия 3, плата годится и для домашнего изготовления):
+#   дорожки 0,6 мм, силовые 0,8 мм; зазор до дорожек, площадок и переходов 0,4 мм;
+#   исключение — выводы с мелким шагом (ЦАП TSSOP 0,65 мм, LP5907 SOT-23-5 0,95 мм): к ним подходят дорожки
+#   0,3 мм с зазором 0,2 мм (иначе к выводу не подойти), дальше дорожка расширяется до 0,6 мм (widen.py).
+CLEARANCE = 0.4
+WIDTH = {"default": 0.6, "supply": 0.6, "power": 0.8, "dac": 0.3, "gnd": 0.4}
+PAD_CLEARANCE = 0.2   # от дорожки до вывода с мелким шагом (ЦАП, LP5907)
+DAC_GAP = 0.3         # между дорожками ЦАП у его выводов
+FINE_PARTS = ("U3", "U4")
+VIA = (1.4, 0.6)      # переход: площадка 1,4 мм, отверстие 0,6 мм — под проволочную перемычку
+VIAS = {c: VIA for c in ("default", "supply", "power", "dac", "gnd")}
+ROUTE_GND = False     # землю ведёт заливка; зажатые выводы — отдельными связями GNDL<n> (см. write_dsn)
+VIA_COST = 200        # «цена» перехода для Freerouting (по умолчанию 50): меньше перемычек
 SPEAKER = {"OUTL_P", "OUTL_N", "OUTR_P", "OUTR_N", "SPK_LP", "SPK_LN", "SPK_RP", "SPK_RN"}
+DAC_NETS = {"DAC_CAPP", "DAC_CAPM", "DAC_VNEG", "DAC_OUTL", "DAC_OUTR", "DAC_LDOO", "I2S_BCK", "I2S_DIN",
+            "I2S_LRCK", "AMP_EN", "+3V3_A", "+3V3_D"}
 
 
 def net_class(net):
-    if net == "VBUS":
-        return "supply"   # выводы USB-C узкие (0,6 мм с зазором 0,2): дорожка 0,6 мм от них не выходит
+    if net == "GND" or net.startswith("GNDL"):
+        return "gnd"      # земля: трассировщик ведёт узкими дорожками к каждому выводу, дальше — заливка
+    if net in DAC_NETS:
+        return "dac"
     if net in POWER_NETS:
         return "power"
     if net in SUPPLY_NETS:
         return "supply"
     return "default"
+
+
+def target_width(net):
+    """Ширина, до которой дорожку расширяют после трассировки."""
+    return 0.8 if net_class(net) == "power" else 0.6
+
+
+def prewires(parts):
+    """Дорожки, проложенные заранее (Freerouting их не трогает): веер у левого ряда выводов ЦАП и перемычка
+    между выводами 1 и 3 LP5907. Без них трассировщик запирает один из выводов ЦАП соседними дорожками."""
+    by = {p.ref: p for p in parts}
+    out = []
+
+    def pad(ref, num):
+        return next(pd for pd in by[ref].pads if pd.num == str(num))
+
+    def path(net, w, pts):
+        for a, b in zip(pts, pts[1:]):
+            out.append({"net": net, "layer": "F", "w": w, "pts": (a[0], a[1], b[0], b[1]), "fixed": True})
+    u3 = by["U3"]
+    xl = u3.x - 2.86 - 0.74 + 0.2            # чуть внутри площадки
+    p5, p6, p7, p8 = (pad("U3", n) for n in (5, 6, 7, 8))
+    c19, r11, r12, c14 = pad("C19", 1), pad("R11", 1), pad("R12", 1), pad("C14", 1)
+    path("DAC_VNEG", 0.3, [(xl, p5.y), (c19.x + 1.1, p5.y), (c19.x, c19.y)])
+    path("DAC_OUTL", 0.3, [(xl, p6.y), (r11.x + 1.5, p6.y), (r11.x, p6.y + 1.5), (r11.x, r11.y)])
+    path("DAC_OUTR", 0.3, [(xl, p7.y), (r12.x + 0.9, p7.y), (r12.x, p7.y + 0.9), (r12.x, r12.y)])
+    path("+3V3_A", 0.3, [(xl, p8.y), (u3.x - 4.0, p8.y), (u3.x - 4.0, c14.y - 0.7), (c14.x, c14.y)])
+    u4 = by["U4"]
+    a, b = pad("U4", 1), pad("U4", 3)
+    xe = a.x - a.w / 2 - 0.6
+    path("+5V", 0.6, [(a.x - 0.3, a.y), (xe, a.y), (xe, b.y), (b.x - 0.3, b.y)])
+    return out
+
+
+GND_SPINES = {"U3": +4.2, "U5": -6.2}     # земля под корпусом: куда (по оси Y от центра) выходит ось
+
+
+def body_ground(parts):
+    """Земля под корпусами ЦАП и усилителя: от каждого земляного вывода к оси корпуса, по оси — к заливке
+    за краем корпуса. И земля модуля: от выводов 1 и 40 к центральной площадке (под модулем дорожек нет)."""
+    out = []
+    by = {p.ref: p for p in parts}
+    for ref, end in GND_SPINES.items():
+        u = by[ref]
+        gnd = [pd for pd in u.pads if pd.net == "GND"]
+        for pd in gnd:
+            inner = pd.x + (pd.w / 2 - 0.15) * (1 if pd.x < u.x else -1)     # от внутреннего края вывода
+            out.append({"net": "GND", "layer": "F", "w": 0.3, "pts": (inner, pd.y, u.x, pd.y), "fixed": True})
+        ys = [pd.y for pd in gnd] + [u.y + end]
+        out.append({"net": "GND", "layer": "F", "w": 0.6, "pts": (u.x, min(ys), u.x, max(ys)), "fixed": True})
+    # LP5907: средний вывод (земля) зажат перемычкой 1–3 — выводим его вправо, между выводами 4 и 5
+    u4 = by["U4"]
+    g = next(pd for pd in u4.pads if pd.num == "2")
+    out.append({"net": "GND", "layer": "F", "w": 0.3, "pts": (g.x, g.y, u4.x + 2.6, g.y), "fixed": True})
+    u1 = by["U1"]
+    cx, cy = epad_center(u1)
+    for num in ("1", "40"):
+        pd = next(q for q in u1.pads if q.num == num)
+        xin = u1.x + (-6.0 if pd.x < u1.x else 6.0)
+        out.append({"net": "GND", "layer": "F", "w": 0.6, "pts": (pd.x, pd.y, xin, pd.y), "fixed": True})
+        out.append({"net": "GND", "layer": "F", "w": 0.6, "pts": (xin, pd.y, cx, cy), "fixed": True})
+    return out
+
+
+dac_ground = body_ground
+
+
+def epad_center(p):
+    pads = [pd for pd in p.pads if pd.num == "41"]
+    return sum(pd.x for pd in pads) / len(pads), sum(pd.y for pd in pads) / len(pads)
 
 
 def um(v):
@@ -75,7 +158,13 @@ def padstack(pad, cache):
     return name
 
 
-def write_dsn(parts, path):
+def write_dsn(parts, path, gnd_links=(), resume=None):
+    """gnd_links — пары (зажатый земляной вывод, ближайший связанный земляной вывод): каждая пара становится
+    отдельной цепью GNDL<n>, и трассировщик проводит между ними дорожку (потом это просто земля)."""
+    link_of = {}
+    for k, (a, b) in enumerate(gnd_links, 1):
+        link_of[(a.ref, a.pin_name)] = f"GNDL{k}"
+        link_of[(b.ref, b.pin_name)] = f"GNDL{k}"
     cache = {}
     images, placement = [], []
     pins_by_net = {}
@@ -89,16 +178,43 @@ def write_dsn(parts, path):
             if p.ref == "U1" and pad.num == "41":
                 if pad.pin_name != "41":
                     continue
-                cx, cy = 69.0 - 1.5, 15.75 - 0.54   # центр сетки из 9 площадок
+                cx, cy = epad_center(p)   # центр сетки из 9 площадок
                 px, py = cx - p.x, -(cy - p.y)
             ps = padstack(pad, cache)
             lines.append(f"      (pin {ps} {q(pad.pin_name)} {um(px)} {um(py)})")
-            if pad.net:
+            if (p.ref, pad.pin_name) in link_of and pad.net == "GND":
+                pins_by_net.setdefault(link_of[(p.ref, pad.pin_name)], []).append(f"{p.ref}-{pad.pin_name}")
+            elif pad.net and (pad.net != "GND" or ROUTE_GND):
                 pins_by_net.setdefault(pad.net, []).append(f"{p.ref}-{pad.pin_name}")
         img = f"IMG_{p.ref}"
         images.append(f"    (image {img}\n" + "\n".join(lines) + "\n    )")
-        placement.append(f"    (component {img} (place {p.ref} {X(p.x)} {Y(p.y)} front 0))")
+        fine = "".join(f" (pin {q(pd.pin_name)} (clearance_class fine))" for pd in p.pads
+                       if p.ref in FINE_PARTS and not pd.npth)
+        placement.append(f"    (component {img} (place {p.ref} {X(p.x)} {Y(p.y)} front 0{fine}))")
     vias = sorted({via_name(c) for c in VIAS})
+    # переходы не под деталями: запрет по курсу каждой детали (+0,2 мм)
+    via_keep = []
+    from board import body_box
+    for p in parts:
+        b = body_box(p)
+        if b and b[0] == "rect":
+            _, x1, y1, x2, y2 = b
+            via_keep.append(f"    (via_keepout (rect signal {X(x1)} {Y(y2)} {X(x2)} {Y(y1)}))")
+        elif b:
+            _, cx, cy, r = b
+            via_keep.append(f"    (via_keepout (circle signal {um(2 * r)} {X(cx)} {Y(cy)}))")
+    # без дорожек под модулем (снизу у него земля) и под корпусом ЦАП (там земля его выводов)
+    wire_keep = []
+    u1 = next(p for p in parts if p.ref == "U1")
+    wire_keep.append(f"    (keepout \"under_U1\" (rect F.Cu {X(u1.x - 7.4)} {Y(u1.y + 8.2)} {X(u1.x + 7.4)} {Y(u1.y - 13)}))")
+    u3 = next(p for p in parts if p.ref == "U3")
+    wire_keep.append(f"    (keepout \"under_U3\" (rect F.Cu {X(u3.x - 2.08)} {Y(u3.y + 3.6)} {X(u3.x + 2.08)} {Y(u3.y - 3.6)}))")
+    wire_keep.append(f"    (keepout \"dac_gnd\" (rect F.Cu {X(u3.x - 0.8)} {Y(u3.y + 4.9)} {X(u3.x + 0.8)} {Y(u3.y + 3.5)}))")
+    u4 = next(p for p in parts if p.ref == "U4")
+    wire_keep.append(f"    (keepout \"lp_gnd\" (rect F.Cu {X(u4.x - 0.6)} {Y(u4.y + 0.3)} {X(u4.x + 3.2)} {Y(u4.y - 0.3)}))")
+    u5 = next(p for p in parts if p.ref == "U5")
+    wire_keep.append(f"    (keepout \"under_U5\" (rect F.Cu {X(u5.x - 1.35)} {Y(u5.y + 4.9)} {X(u5.x + 1.35)} {Y(u5.y - 4.9)}))")
+    wire_keep.append(f"    (keepout \"amp_gnd\" (rect F.Cu {X(u5.x - 0.8)} {Y(u5.y - 4.8)} {X(u5.x + 0.8)} {Y(u5.y - 6.9)}))")
     for v in vias:
         d, dr = [int(x) / 1000 for x in re.findall(r"_(\d+):(\d+)_", v)[0]]
         cache[v] = (v, f"    (padstack {q(v)}\n      (shape (circle F.Cu {um(d)}))\n      (shape (circle B.Cu {um(d)}))\n      (attach off)\n    )")
@@ -107,14 +223,36 @@ def write_dsn(parts, path):
     e = 0.5
     inset = [(e, e), (W - e, e), (W - e, H - e), (e, H - e), (e, e)]
     boundary = [(r, 0), (W - r, 0), (W, r), (W, H - r), (W - r, H), (r, H), (0, H - r), (0, r), (r, 0)]
+    wiring = []
+    pre = prewires(parts)
+    if resume is not None:
+        # продолжение: готовая разводка остаётся (Freerouting может её подвинуть), земля — неподвижные препятствия
+        rt, rv = resume
+        pre = [t for t in rt if t["net"] != "GND"]
+        for t in rt:
+            if t["net"] == "GND":
+                x1, y1, x2, y2 = t["pts"]
+                layer = "F.Cu" if t["layer"] == "F" else "B.Cu"
+                wire_keep.append(f"    (keepout (path {layer} {um(t['w'] + 0.02)} {X(x1)} {Y(y1)} {X(x2)} {Y(y2)}))")
+        for v in rv:
+            if v["net"] == "GND":
+                wire_keep.append(f"    (keepout (circle signal {um(v['d'] + 0.02)} {X(v['x'])} {Y(v['y'])}))")
+            else:
+                wiring.append(f"    (via {q(via_name('default'))} {X(v['x'])} {Y(v['y'])} (net {q(v['net'])}))")
+    for t in pre:
+        x1, y1, x2, y2 = t["pts"]
+        layer = "F.Cu" if t["layer"] == "F" else "B.Cu"
+        kind = "protect" if (t.get("fixed") or resume is None) else "route"
+        wiring.append(f"    (wire (path {layer} {um(t['w'])} {X(x1)} {Y(y1)} {X(x2)} {Y(y2)}) (net {q(t['net'])}) (type {kind}))")
     classes = {}
     for net in pins_by_net:
         classes.setdefault(net_class(net), []).append(net)
     cls_txt = []
     for c, nets in classes.items():
         w = WIDTH[c]
+        cc = " (clearance_class dacw)" if c == "dac" else ""
         cls_txt.append(f"    (class {c} " + " ".join(q(n) for n in nets) +
-                       f"\n      (circuit (use_via {q(via_name(c))}))\n      (rule (width {um(w)}))\n    )")
+                       f"\n      (circuit (use_via {q(via_name(c))})){cc}\n      (rule (width {um(w)}))\n    )")
     out = f"""(pcb {q(os.path.basename(path))}
   (parser (string_quote ") (space_in_quoted_tokens on) (host_cad "KiCad's Pcbnew") (host_version "7.0"))
   (resolution um 10)
@@ -123,10 +261,17 @@ def write_dsn(parts, path):
     (layer F.Cu (type signal) (property (index 0)))
     (layer B.Cu (type signal) (property (index 1)))
     (boundary (path pcb 0 {' '.join(X(x) + ' ' + Y(y) for x, y in boundary)}))
+    (autoroute_settings (fanout off) (autoroute on) (postroute on) (vias on) (via_costs {VIA_COST})
+      (start_ripup_costs 100) (start_pass_no 1)
+      (layer_rule F.Cu (active on) (preferred_direction horizontal))
+      (layer_rule B.Cu (active on) (preferred_direction vertical)))
     (keepout "antenna" (polygon signal 0 {X(kx1)} {Y(ky1)} {X(kx2)} {Y(ky1)} {X(kx2)} {Y(ky2)} {X(kx1)} {Y(ky2)}))
-    (plane "GND" (polygon B.Cu 0 {' '.join(X(x) + ' ' + Y(y) for x, y in inset)}))
+{chr(10).join(wire_keep)}
+{chr(10).join(via_keep)}
     (via {' '.join(q(v) for v in vias)})
-    (rule (width {um(WIDTH['default'])}) (clearance {um(CLEARANCE)}) (clearance {um(PAD_CLEARANCE)} (type default_smd)) (clearance 100 (type smd_smd)))
+    (rule (width {um(WIDTH['default'])}) (clearance {um(CLEARANCE)})
+      (clearance {um(PAD_CLEARANCE)} (type fine_wire)) (clearance {um(PAD_CLEARANCE)} (type fine_dacw))
+      (clearance {um(DAC_GAP)} (type dacw_dacw)) (clearance 100 (type smd_smd)))
   )
   (placement
 {chr(10).join(placement)}
@@ -139,7 +284,9 @@ def write_dsn(parts, path):
 {chr(10).join(f'    (net {q(n)} (pins {" ".join(pins)}))' for n, pins in pins_by_net.items())}
 {chr(10).join(cls_txt)}
   )
-  (wiring)
+  (wiring
+{chr(10).join(wiring)}
+  )
 )
 """
     with open(path, "w") as f:
@@ -185,7 +332,7 @@ def read_ses(path):
     tracks, vias = [], []
     netout = next(find(routes, "network_out"))
     for net in find(netout, "net"):
-        name = net[1]
+        name = "GND" if net[1].startswith("GNDL") else net[1]
         for w in find(net, "wire"):
             path = next(find(w, "path"))
             layer = "F" if path[1] == "F.Cu" else "B"

@@ -14,7 +14,7 @@ from kiutils.items.common import Effects, Font, Justify, Net, Position
 from kiutils.items.gritems import GrLine, GrText
 from kiutils.items.zones import FillSettings, Hatch, KeepoutSettings, Zone, ZonePolygon
 from placement import W, H, ANTENNA_KEEPOUT
-from route import CLEARANCE, PAD_CLEARANCE, VIAS, WIDTH, net_class
+from route import CLEARANCE, DAC_GAP, FINE_PARTS, PAD_CLEARANCE, VIA, VIAS, WIDTH, net_class
 
 X0, Y0 = 100.0, 80.0   # плата в середине листа KiCad
 NS = uuid.UUID("6b1f0f8e-5d4c-4b7e-9a51-3c1e2f6a7b10")
@@ -95,9 +95,10 @@ def _zone(layers, net, name, poly, keepout=False, priority=None):
         z.keepoutSettings = KeepoutSettings(tracks="not_allowed", vias="not_allowed", pads="allowed",
                                             copperpour="not_allowed", footprints="allowed")
     else:
-        z.minThickness = 0.25
+        z.minThickness = 0.5
         z.clearance = 0.4
-        z.fillSettings = FillSettings(yes=False, thermalGap=0.5, thermalBridgeWidth=0.5)   # зальёт KiCad по «B»
+        # зальёт KiCad по «B»; острова (не связанные с землёй куски) убираются всегда
+        z.fillSettings = FillSettings(yes=False, thermalGap=0.4, thermalBridgeWidth=0.5, islandRemovalMode=0)
     return z
 
 
@@ -142,10 +143,10 @@ def write_pcb(path, parts, tracks, vias, silk_text, title="Irene client"):
 
 
 def write_project(path, nets):
-    classes = [{"name": "Default", "clearance": PAD_CLEARANCE, "track_width": WIDTH["default"],
+    classes = [{"name": "Default", "clearance": CLEARANCE, "track_width": WIDTH["default"],
                 "via_diameter": VIAS["default"][0], "via_drill": VIAS["default"][1], "nets": []}]
-    for cls, title in (("supply", "Supply"), ("power", "Power")):
-        classes.append({"name": title, "clearance": PAD_CLEARANCE, "track_width": WIDTH[cls],
+    for cls, title in (("power", "Power"), ("dac", "DAC")):
+        classes.append({"name": title, "clearance": CLEARANCE if cls == "power" else DAC_GAP, "track_width": WIDTH[cls],
                         "via_diameter": VIAS[cls][0], "via_drill": VIAS[cls][1],
                         "nets": sorted(n for n in nets if net_class(n) == cls)})
     for c in classes:
@@ -157,13 +158,12 @@ def write_project(path, nets):
             "design_settings": {
                 "defaults": {"board_outline_line_width": 0.1, "copper_line_width": 0.2, "silk_line_width": 0.15,
                              "silk_text_size_h": 1.0, "silk_text_size_v": 1.0, "silk_text_thickness": 0.15},
-                "rules": {"min_clearance": PAD_CLEARANCE, "min_copper_edge_clearance": 0.3, "min_hole_clearance": 0.25,
-                          "min_hole_to_hole": 0.25, "min_through_hole_diameter": 0.3, "min_track_width": 0.2,
-                          "min_via_annular_width": 0.13, "min_via_diameter": 0.5, "min_silk_clearance": 0.0,
+                "rules": {"min_clearance": PAD_CLEARANCE, "min_copper_edge_clearance": 0.5, "min_hole_clearance": 0.25,
+                          "min_hole_to_hole": 0.25, "min_through_hole_diameter": 0.3, "min_track_width": 0.3,
+                          "min_via_annular_width": 0.3, "min_via_diameter": 1.2, "min_silk_clearance": 0.0,
                           "solder_mask_clearance": 0.05, "solder_mask_min_width": 0.1},
-                "track_widths": [0.0, 0.25, 0.4, 0.6],
-                "via_dimensions": [{"diameter": 0.0, "drill": 0.0}, {"diameter": 0.6, "drill": 0.3},
-                                   {"diameter": 0.8, "drill": 0.4}],
+                "track_widths": [0.0, 0.3, 0.6, 0.8, 1.0],
+                "via_dimensions": [{"diameter": 0.0, "drill": 0.0}, {"diameter": VIA[0], "drill": VIA[1]}],
             },
         },
         "meta": {"filename": path.rsplit("/", 1)[-1], "version": 1},
@@ -178,15 +178,22 @@ def write_project(path, nets):
         json.dump(pro, f, indent=2, ensure_ascii=False)
     dru = path.rsplit(".", 1)[0] + ".kicad_dru"
     with open(dru, "w", encoding="utf-8") as f:
+        fine = " || ".join(f"A.intersectsCourtyard('{r}') || B.intersectsCourtyard('{r}')" for r in FINE_PARTS)
         f.write(f"""(version 1)
 
-# Между дорожками и переходами — не меньше {CLEARANCE} мм; от дорожки до вывода микросхемы — {PAD_CLEARANCE} мм
-# (у PCM5102A шаг выводов 0,65 мм, с большим зазором к ним не подойти).
-(rule "track_to_track"
-  (constraint clearance (min {CLEARANCE}mm))
-  (condition "A.Type == 'Track' && B.Type == 'Track'"))
+# Зазор между дорожками, площадками и переходами разных цепей — не меньше {CLEARANCE} мм (правило Default).
+# Исключение — выводы с мелким шагом: ЦАП (TSSOP, 0,65 мм) и LP5907 (SOT-23-5, 0,95 мм): {PAD_CLEARANCE} мм,
+# между дорожками цепей ЦАП у его выводов — {DAC_GAP} мм (класс DAC). Иначе к этим выводам не подойти.
+(rule "fine_pitch"
+  (constraint clearance (min {PAD_CLEARANCE}mm))
+  (condition "{fine}"))
 
-(rule "via_to_track"
-  (constraint clearance (min {CLEARANCE}mm))
-  (condition "A.Type == 'Via' && (B.Type == 'Track' || B.Type == 'Via')"))
+(rule "dac_tracks"
+  (constraint clearance (min {DAC_GAP}mm))
+  (condition "A.NetClass == 'DAC' && B.NetClass == 'DAC'"))
+
+(rule "vias_not_under_parts"
+  (constraint disallow via)
+  (condition "A.intersectsCourtyard('*')"))
 """)
+
