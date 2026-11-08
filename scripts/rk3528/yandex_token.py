@@ -40,7 +40,7 @@ def main():
     if os.path.exists(OPTIONS):
         with open(OPTIONS, encoding="utf-8") as f:
             data = json.load(f)
-    data.setdefault("v", "1.0")  # версия плагина, без неё Ирина не прочитает настройки
+    data.setdefault("v", "1.0")  # версия плагина, без неё Руслана не прочитает настройки
     data["token"] = token
     with open(OPTIONS, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
@@ -49,7 +49,7 @@ def main():
     except OSError:
         pass
     print("Готово, токен сохранён в", OPTIONS)
-    print("Перезапустите Ирину: systemctl --user restart irene")
+    print("Перезапустите Руслану: systemctl --user restart irene")
 
 
 if __name__ == "__main__":

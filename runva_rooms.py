@@ -1,4 +1,4 @@
-# Ирина в режиме "сервер комнат".
+# Руслана в режиме "сервер комнат".
 #
 # В каждой комнате стоит клиент (ESP32 с I2S-микрофоном и усилителем, см. esp32_client/).
 # Клиент по Wi-Fi отправляет звук на сервер (WebSocket), сервер распознаёт речь (Vosk через sherpa-onnx),
@@ -10,7 +10,7 @@
 # Протокол (WebSocket, путь "/"):
 #   клиент -> сервер, текст:  {"type":"hello","room":"kitchen","name":"Кухня","token":"...","rate":16000,"fw":"1.0","volume":70}
 #                             {"type":"vad","state":"start"} / {"type":"vad","state":"end","level":1234}
-#                             {"type":"text","text":"ирина привет"}         (отладка: команда текстом)
+#                             {"type":"text","text":"руслана привет"}         (отладка: команда текстом)
 #                             {"type":"meter","level":..,"noise":..,"gain":..}  {"type":"state","gain":..,"vad":..,...}
 #                             (прошивка 2.0+: в hello есть "caps":["config","meter","agc"] и настройки микрофона;
 #                              3.1+ на S3: "aec" — эхо- и шумоподавление, в config/state ключи "aec","ns";
@@ -23,11 +23,11 @@
 #                             {"type":"volume","value":0..100} {"type":"error","message":"..."}
 #                             {"type":"config","gain":..,"vad":..,"hang":..,"agc":true,"agc_max":30}
 #                             {"type":"meter","enable":true|false}   (живой индикатор, пока открыт веб-интерфейс)
-#   сервер -> клиент, binary: PCM s16le mono с частотой из tts_start (ответ Ирины)
+#   сервер -> клиент, binary: PCM s16le mono с частотой из tts_start (ответ Русланы)
 #
 # Музыка (прошивка 3.0+, "snap" в caps) идёт не здесь, а через Snapcast: клиент сам подключается к snapserver
 # (порт 1704) с ID = id комнаты, плагин Яндекс Музыки назначает комнатам потоки (utils/multiroom.py).
-# Клиент смешивает ответы Ирины с музыкой и приглушает музыку на время ответа и после "wake".
+# Клиент смешивает ответы Русланы с музыкой и приглушает музыку на время ответа и после "wake".
 
 import argparse
 import asyncio
@@ -62,7 +62,7 @@ DEFAULT_OPTIONS = {
     "max_segment_sec": 12,       # максимальная длина одной фразы от клиента
     "default_volume": 70,        # громкость ответов на клиентах по умолчанию
     "log_heard": False,          # писать в лог все распознанные фразы, даже без имени помощника (для проверки микрофона)
-    "barge_in": False,           # микрофон приставки слушает и во время ответа Ирины (нужно эхоподавление:
+    "barge_in": False,           # микрофон приставки слушает и во время ответа Русланы (нужно эхоподавление:
                                  # bash scripts/rk3528/enable_aec.sh) — ответ можно прервать словом "стоп"
     "tts_chunk_bytes": 4096,
     "dump_audio": "",            # папка: сохранять каждую фразу из комнат в WAV (отладка распознавания); "" — выключено
@@ -78,7 +78,7 @@ DEFAULT_OPTIONS = {
     "cpu_boost_hold_sec": 3,     # ...и ещё столько секунд после (фраза -> команда -> ответ без провалов)
 }
 ROOT = os.path.dirname(os.path.abspath(__file__))
-OPTIONS_FILE = os.path.join(ROOT, "options", "rooms.json")   # все настройки Ирины — в папке options
+OPTIONS_FILE = os.path.join(ROOT, "options", "rooms.json")   # все настройки Русланы — в папке options
 OLD_OPTIONS_FILE = os.path.join(ROOT, "runva_rooms.json")    # здесь они лежали до версии с одной папкой
 MIC_KEYS = ("gain", "vad", "hang", "agc", "agc_max", "aec", "ns")   # настройки микрофона клиента (2.0+; aec/ns — 3.1+ на S3)
 SNAP_RATE = 22050            # частота потоков Snapcast (scripts/rk3528/snapserver.conf) — на ней играют клиенты 3.0+
@@ -213,7 +213,7 @@ class Room:
         if self.speaking and self.server.is_stop_phrase(text) and not self.server.has_name(text):
             self.server.interrupt(self, text)   # "стоп" во время ответа — просто замолчать
             return
-        # тихо сказанное имя детектор речи клиента иногда режет надвое: «ири» + «на привет» -> «ирина привет»
+        # тихо сказанное имя детектор речи клиента иногда режет надвое: «ири» + «на привет» -> «руслана привет»
         now = time.time()
         if self.fragment and now - self.fragment[1] < 2.5 and not self.server.has_name(text):
             for joined in (self.fragment[0] + text, self.fragment[0] + " " + text):
@@ -227,7 +227,7 @@ class Room:
         words = text.split()
         names = self.server.core.voiceAssNames
         if words and all(w in names for w in words):
-            # сказали только "Ирина" — ждём команду следующей фразой
+            # сказали только "Руслана" — ждём команду следующей фразой
             self.armed_until = time.time() + 6
             self.send_json({"type": "wake"})
             return
@@ -380,7 +380,7 @@ class RoomServer:
                 done.set()
         self.cmd_q.put(("call", room, run))
         if not done.wait(timeout):
-            raise TimeoutError("Ирина занята — команда не выполнилась")
+            raise TimeoutError("Руслана занята — команда не выполнилась")
         if "error" in box:
             raise box["error"]
         return box.get("result")
@@ -418,7 +418,7 @@ class RoomServer:
         return any(w in self.STOP_WORDS for w in words[-3:])
 
     def interrupt(self, room, heard=""):
-        """Прервать ответ Ирины в комнате (только приставка: ESP32 не слушает, пока говорит)."""
+        """Прервать ответ Русланы в комнате (только приставка: ESP32 не слушает, пока говорит)."""
         if not (room.local and room.speaking):
             return
         try:
@@ -429,7 +429,7 @@ class RoomServer:
             logger.debug(e)
 
     def on_wake(self, room, partial):
-        # "Ирина, ..." во время ответа — замолкаем и слушаем новую команду
+        # "Руслана, ..." во время ответа — замолкаем и слушаем новую команду
         if room.local and room.speaking and self.options.get("barge_in"):
             self.interrupt(room, partial)
         # приглушить музыку на приставке, если имя прозвучало в комнате с приставкой
@@ -478,7 +478,7 @@ class RoomServer:
                 logger.info(f"Фразу услышали в {[it[1].name for it in g]}, отвечаю в {best[1].name}")
             self.cmd_q.put(("cmd", best[1], best[2]))
 
-    # --- выполнение команд: ядро Ирины не потокобезопасно, поэтому один поток ---
+    # --- выполнение команд: ядро Русланы не потокобезопасно, поэтому один поток ---
     def _command_loop(self):
         core = self.core
         while True:
@@ -579,7 +579,7 @@ class RoomServer:
                 room.mute_until = time.time() + 0.4
 
     def synth(self, text):
-        """Текст -> (частота, PCM s16le mono) через выбранный TTS Ирины (с кэшем)."""
+        """Текст -> (частота, PCM s16le mono) через выбранный TTS Русланы (с кэшем)."""
         core = self.core
         if core.useTTSCache:
             path = core.get_tts_cache_file(text)
@@ -799,7 +799,7 @@ class RoomServer:
         async with serve(self.handle_client, self.options["host"], self.options["port"],
                          max_size=2 ** 20, ping_interval=20, ping_timeout=20,
                          process_request=self.ui.process_request if self.ui else None) as srv:
-            print(f"Сервер комнат Ирины слушает ws://{self.options['host']}:{self.options['port']}/")
+            print(f"Сервер комнат Русланы слушает ws://{self.options['host']}:{self.options['port']}/")
             if self.ui:
                 asyncio.ensure_future(self.ui.ticker())
                 logger.warning(f"Веб-интерфейс: http://<IP приставки>:{self.options['port']}/")
@@ -866,7 +866,7 @@ def read_wav_mono16(path):
 
 def split_speech(text, min_len=25, first_max=60):
     """Ответ -> куски для озвучки по частям.
-    Первый кусок — как можно короче: от его синтеза зависит, через сколько Ирина начнёт говорить
+    Первый кусок — как можно короче: от его синтеза зависит, через сколько Руслана начнёт говорить
     («Правила игры.» — отдельно; длинное первое предложение режется по запятой).
     Дальше короткие предложения склеиваются со следующим, чтобы не дробить интонацию."""
     parts = [p.strip() for p in re.split(r"(?<=[.!?…])\s+", (text or "").strip()) if p.strip()]
@@ -909,7 +909,7 @@ def limit_rate(rate, pcm, max_rate=22050):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Ирина: сервер для клиентов в комнатах")
+    parser = argparse.ArgumentParser(description="Руслана: сервер для клиентов в комнатах")
     parser.add_argument("--local-room", help="использовать микрофон приставки как комнату с этим именем")
     parser.add_argument("--port", type=int)
     parser.add_argument("--dump-audio", metavar="ПАПКА", help="сохранять звук каждой фразы в WAV (отладка)")
@@ -930,7 +930,7 @@ def main():
     if args.dump_audio:
         options["dump_audio"] = args.dump_audio
 
-    # ядро Ирины настраивает свои логи само; у сервера комнат — свой вывод, чтобы видеть распознанные фразы
+    # ядро Русланы настраивает свои логи само; у сервера комнат — свой вывод, чтобы видеть распознанные фразы
     handler = logging.StreamHandler()
     handler.setFormatter(logging.Formatter("%(asctime)s [комнаты] %(message)s", "%H:%M:%S"))
     logger.addHandler(handler)

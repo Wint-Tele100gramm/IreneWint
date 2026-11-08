@@ -8,6 +8,7 @@
 set -euo pipefail
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 KIND="${1:-small}"
+DEST="${ASR_DIR:-$REPO/model-sherpa}"     # куда положить (дополнение Home Assistant кладёт в /data)
 BASE="https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models"
 
 TMP="$(mktemp -d)"
@@ -36,7 +37,7 @@ case "$KIND" in
   *) echo "Использование: $0 [small|full]"; exit 1 ;;
 esac
 
-rm -rf "$REPO/model-sherpa"
-mv "$SRC" "$REPO/model-sherpa"
-du -sh "$REPO/model-sherpa"
-echo "Готово. Перезапустите Ирину: systemctl --user restart irene"
+rm -rf "$DEST"
+mv "$SRC" "$DEST"
+du -sh "$DEST"
+echo "Готово. Перезапустите Руслану: systemctl --user restart irene"

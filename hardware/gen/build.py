@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Сборка производственных файлов платы клиента Ирины.
+"""Сборка производственных файлов платы клиента Русланы.
 
     IRENE_PCB_EXT=<папка с kiutils, kicad-footprints, kicad-libraries, freerouting.jar> python3 build.py [--route]
 

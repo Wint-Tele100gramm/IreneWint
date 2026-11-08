@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Текстовая команда Ирине — для проверки без микрофона и клиентов ESP32.
+"""Текстовая команда Руслане — для проверки без микрофона и клиентов ESP32.
 
     .venv/bin/python scripts/rk3528/irene_cmd.py "включи свет на кухне"
     .venv/bin/python scripts/rk3528/irene_cmd.py --room Кухня "включи свет"     # как будто сказали на кухне
     .venv/bin/python scripts/rk3528/irene_cmd.py --mute "какие комнаты подключены"  # ответ только текстом в логе
 
-Имя "ирина" в начале добавляется само. Ответ играет через динамик приставки (paplay).
+Имя помощника (первое из настроек, обычно «руслана») в начале добавляется само. Ответ играет через динамик приставки (paplay).
 """
 import argparse
 import asyncio
@@ -31,9 +31,15 @@ async def main():
         path = os.path.join(ROOT, "runva_rooms.json")      # до переезда настроек в options/
     with open(path, encoding="utf-8") as f:
         opts = json.load(f)
+    names = ["руслана"]
+    try:
+        with open(os.path.join(ROOT, "options", "core.json"), encoding="utf-8") as f:
+            names = json.load(f)["voiceAssNames"].split("|") or names
+    except (OSError, ValueError, KeyError):
+        pass
     text = " ".join(args.text).lower()
-    if not text.startswith("ирин"):
-        text = "ирина " + text
+    if not text.split() or text.split()[0] not in names:
+        text = names[0] + " " + text
 
     async with connect(f"ws://127.0.0.1:{opts['port']}/", max_size=2 ** 22) as ws:
         await ws.send(json.dumps({"type": "hello", "room": "console", "name": args.room,
@@ -61,7 +67,7 @@ async def main():
                 elif t == "idle":
                     break
         except asyncio.TimeoutError:
-            sys.exit("Ирина не ответила за 60 секунд — смотрите journalctl --user-unit irene -f")
+            sys.exit("Руслана не ответила за 60 секунд — смотрите journalctl --user-unit irene -f")
     print("Готово")
 
 

@@ -1,8 +1,8 @@
-# Прошивки клиентов ESP32 для обновления по воздуху через сервер Ирины.
+# Прошивки клиентов ESP32 для обновления по воздуху через сервер Русланы.
 #
 # Файл .bin — то, что даёт Arduino IDE: «Скетч → Экспорт скомпилированного бинарного файла» (IreneClient.ino.bin,
 # без bootloader и merged). По заголовку образа определяется чип (ESP32 или ESP32-S3), по метке
-# "IRENE_FW:<версия>:<чип>:" в теле — версия прошивки Ирины. Чужие прошивки и прошивки для другого чипа не принимаются.
+# "IRENE_FW:<версия>:<чип>:" в теле — версия прошивки Русланы. Чужие прошивки и прошивки для другого чипа не принимаются.
 
 import hashlib
 import json
@@ -38,7 +38,7 @@ def version_tuple(v: str):
 
 
 def inspect(data: bytes) -> dict:
-    """Проверить образ и вытащить чип и версию. FirmwareError — если это не прошивка клиента Ирины."""
+    """Проверить образ и вытащить чип и версию. FirmwareError — если это не прошивка клиента Русланы."""
     if len(data) < 1024 or data[0] != 0xE9:
         raise FirmwareError("Это не прошивка ESP32 (нужен файл .bin из «Экспорт скомпилированного бинарного файла»)")
     chip = CHIP_IDS.get(int.from_bytes(data[12:14], "little"), "")
@@ -59,7 +59,7 @@ def inspect(data: bytes) -> dict:
         raise FirmwareError("Файл слишком большой для прошивки клиента")
     m = re.search(rb"IRENE_FW:([0-9][0-9A-Za-z.\-]{0,15}):([a-z0-9]{3,10}):", data)
     if not m:
-        raise FirmwareError("В файле нет метки прошивки Ирины — это другая прошивка или версия старше 3.2")
+        raise FirmwareError("В файле нет метки прошивки Русланы — это другая прошивка или версия старше 3.2")
     version, tag_chip = m.group(1).decode(), m.group(2).decode()
     if chip and tag_chip != chip:
         raise FirmwareError(f"Метка {tag_chip} не совпадает с чипом образа {chip}")
@@ -116,11 +116,6 @@ def delete(name: str):
             os.unlink(p + ".json")
         except OSError:
             pass
-
-
-def latest_for(chip: str):
-    items = [i for i in list_all() if i["chip"] == chip]
-    return items[0] if items else None
 
 
 def _cleanup(chip):

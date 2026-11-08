@@ -38,7 +38,7 @@ OUT = os.path.join(ROOT, "data", "jokes.json")
 HF_API = "https://datasets-server.huggingface.co"
 HF_DATASET = "igorktech/anekdots"
 RZH_URL = "http://rzhunemogu.ru/RandJSON.aspx"
-UA = {"User-Agent": "IreneVoiceAssistant/1.0 (jokes downloader)"}
+UA = {"User-Agent": "RuslanaVoiceAssistant/1.0 (jokes downloader)"}
 
 
 def _rx(*stems):
@@ -433,7 +433,7 @@ def add(pools, want, text, adult_hint=False, mark=None):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Скачать анекдоты для Ирины")
+    ap = argparse.ArgumentParser(description="Скачать анекдоты для Русланы")
     ap.add_argument("--source", choices=["hf", "rzhunemogu", "all"], default="hf")
     ap.add_argument("--normal", type=int, default=3000, help="сколько обычных анекдотов")
     ap.add_argument("--adult", type=int, default=1500, help="сколько пошлых анекдотов")

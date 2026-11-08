@@ -1,4 +1,4 @@
-"""Подготовка Ирины на Windows: настройки, ключ клиентов, модели распознавания и голоса (Silero).
+"""Подготовка Русланы на Windows: настройки, ключ клиентов, модели распознавания и голоса (Silero).
 
 Запускается из install.bat (можно и повторно — уже сделанное не повторяется).
 """
@@ -61,7 +61,7 @@ def write_json(path, data):
 def setup_options():
     print("==> Настройки (все — в папке options)")
     os.makedirs(OPTIONS, exist_ok=True)
-    # значения по умолчанию — в коде Ирины; здесь только то, что спрашиваем у пользователя
+    # значения по умолчанию — в коде Русланы; здесь только то, что спрашиваем у пользователя
     core_path = os.path.join(OPTIONS, "core.json")
     core = read_json(core_path)
     if core.get("ttsEngineId") == "vosk":
@@ -128,7 +128,7 @@ def main():
     setup_tts()
     setup_jokes()
     print()
-    print("Готово. Запуск Ирины: run.bat")
+    print("Готово. Запуск Русланы: run.bat")
 
 
 if __name__ == "__main__":

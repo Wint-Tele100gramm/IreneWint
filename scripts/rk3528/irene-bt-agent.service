@@ -1,5 +1,5 @@
 [Unit]
-Description=Bluetooth pairing agent for Irene (accepts pairing without PIN while discoverable)
+Description=Bluetooth pairing agent for Ruslana (accepts pairing without PIN while discoverable)
 After=bluetooth.service
 Requires=bluetooth.service
 

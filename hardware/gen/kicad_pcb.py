@@ -102,7 +102,7 @@ def _zone(layers, net, name, poly, keepout=False, priority=None):
     return z
 
 
-def write_pcb(path, parts, tracks, vias, silk_text, title="Irene client"):
+def write_pcb(path, parts, tracks, vias, silk_text, title="Ruslana client"):
     bd = Board.create_new()
     bd.version = 20221018      # формат KiCad 7: открывается KiCad 7, 8, 9
     bd.generator = "pcbnew"

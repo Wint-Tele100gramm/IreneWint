@@ -3,7 +3,7 @@ chcp 65001 >nul
 cd /d "%~dp0"
 set PYTHONUTF8=1
 set PYTHONUNBUFFERED=1
-title Ирина
+title Руслана
 if exist "%~dp0mpv\mpv.exe" set "PATH=%~dp0mpv;%PATH%"
 if not exist .venv\Scripts\python.exe (
   echo Сначала запустите install_windows.bat
@@ -24,5 +24,5 @@ if %errorlevel%==3 (
   goto loop
 )
 echo.
-echo Ирина остановилась ^(код %errorlevel%^).
+echo Руслана остановилась ^(код %errorlevel%^).
 pause

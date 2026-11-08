@@ -26,16 +26,17 @@ logger = logging.getLogger("rooms")
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 PAGE = os.path.join(ROOT, "web", "index.html")
+INGRESS_IP = "172.30.32.2"          # адрес Supervisor, через который идёт ingress дополнения Home Assistant
 
 
 # ---------------------------------------------------------------- описание настроек для страницы
 # file: "rooms" — options/rooms.json (сервер комнат), иначе имя плагина (options/<plugin>.json).
-# live: изменение действует сразу; иначе — после перезапуска Ирины (страница предложит перезапустить).
+# live: изменение действует сразу; иначе — после перезапуска Русланы (страница предложит перезапустить).
 
 SETTINGS = [
     {"id": "assistant", "title": "Ассистент", "file": "core", "fields": [
         {"key": "voiceAssNames", "label": "Имена помощника", "type": "text",
-         "help": "Через |, все формы: ирина|ирины|ирину"},
+         "help": "Через |, все формы: руслана|русланы|руслану"},
         {"key": "replyNoCommandFound", "label": "Ответ, если команда не понята", "type": "text", "live": True},
         {"key": "replyNoCommandFoundInContext", "label": "Ответ, если не понят ответ на вопрос", "type": "text",
          "live": True},
@@ -62,7 +63,7 @@ SETTINGS = [
         {"key": "token", "label": "Токен", "type": "secret",
          "help": "Проще получить кнопкой «Войти в Яндекс» ниже"},
         {"key": "volume", "label": "Громкость музыки", "type": "number"},
-        {"key": "duck_volume", "label": "Громкость, пока Ирина слушает команду", "type": "number"},
+        {"key": "duck_volume", "label": "Громкость, пока Руслана слушает команду", "type": "number"},
         {"key": "max_bitrate", "label": "Качество, кбит/с", "type": "select",
          "choices": [[128, "128"], [192, "192"], [320, "320"]]},
         {"key": "multiroom", "label": "Мультирум (Snapcast)", "type": "bool",
@@ -98,7 +99,7 @@ SETTINGS = [
     ]},
     {"id": "gemini", "title": "Нейросеть (Gemini)", "file": "plugin_gemini", "fields": [
         {"key": "enabled", "label": "Отвечать нейросетью на незнакомые фразы", "type": "bool", "live": True,
-         "help": "«Ирина, расскажи сказку», «Ирина, почему небо голубое». Выключено — только «спроси нейросеть …»"},
+         "help": "«Руслана, расскажи сказку», «Руслана, почему небо голубое». Выключено — только «спроси нейросеть …»"},
         {"key": "api_key", "label": "Ключ Gemini API", "type": "secret", "live": True,
          "help": "aistudio.google.com/apikey"},
         {"key": "tier", "label": "Тариф", "type": "select", "live": True,
@@ -113,7 +114,7 @@ SETTINGS = [
         {"key": "thinking_paid", "label": "«Размышления» на платном тарифе", "type": "bool", "live": True,
          "help": "Ответы точнее, но на несколько секунд дольше и дороже"},
         {"key": "monthly_token_limit", "label": "Лимит токенов в месяц (платный)", "type": "number", "live": True,
-         "help": "0 — без лимита. Расход: «Ирина, расход нейросети». Цены — ai.google.dev/pricing"},
+         "help": "0 — без лимита. Расход: «Руслана, расход нейросети». Цены — ai.google.dev/pricing"},
         {"key": "proxy", "label": "Прокси", "type": "text", "live": True,
          "help": "Из России Google API не отвечает. socks5h://адрес:порт или http://адрес:порт сервера за границей"},
         {"key": "base_url", "label": "Адрес API", "type": "text", "live": True,
@@ -137,7 +138,7 @@ SETTINGS = [
         {"key": "dump_audio", "label": "Записывать фразы в WAV (папка)", "type": "text", "live": True,
          "help": "Например /tmp/irene-dump; пусто — не записывать. Записи слушаются на вкладке «Журнал»"},
         {"key": "cpu_boost", "label": "Максимальная частота процессора на время речи", "type": "bool", "live": True,
-         "help": "Пока клиент передаёт фразу и пока Ирина синтезирует ответ — регулятор performance, потом обычный"},
+         "help": "Пока клиент передаёт фразу и пока Руслана синтезирует ответ — регулятор performance, потом обычный"},
         {"key": "cpu_boost_hold_sec", "label": "Держать максимальную частоту после речи, с", "type": "number",
          "step": 0.5, "live": True},
         {"key": "tts_cache_max_mb", "label": "Кэш озвучки, не больше МБ", "type": "number", "live": True},
@@ -235,6 +236,11 @@ class WebUI:
                     room.live_level = None
 
     # ---------------------------------------------------------------- HTTP (страница и записи)
+    @staticmethod
+    def from_ingress(addr) -> bool:
+        """Запрос через панель Home Assistant (дополнение, ingress): пользователь уже вошёл в Home Assistant."""
+        return bool(os.environ.get("SUPERVISOR_TOKEN")) and bool(addr) and addr[0] == INGRESS_IP
+
     def password(self):
         o = self.server.options
         return o.get("ui_password") or o.get("token") or ""
@@ -252,7 +258,7 @@ class WebUI:
                 return self._http(connection, 500, "Нет файла web/index.html".encode(), "text/plain; charset=utf-8")
         if path.startswith("/dump/"):
             key = urllib.parse.parse_qs(url.query).get("k", [""])[0]
-            if self.password() and key not in self.sessions:
+            if self.password() and key not in self.sessions and not self.from_ingress(connection.remote_address):
                 return self._http(connection, 403, b"forbidden", "text/plain")
             folder = self.server.options.get("dump_audio") or ""
             name = os.path.basename(urllib.parse.unquote(path[len("/dump/"):]))
@@ -286,7 +292,7 @@ class WebUI:
 
     # ---------------------------------------------------------------- WebSocket страницы
     async def handle(self, ws):
-        authorized = not self.password()
+        authorized = not self.password() or self.from_ingress(ws.remote_address)
         try:
             await ws.send(json.dumps({"event": "hello", "data": {"need_login": not authorized}}))
             if authorized:
@@ -689,14 +695,14 @@ class WebUI:
             raise ValueError("Голос Silero не загружен")
         opts["speaker"] = str(params.get("speaker") or opts.get("speaker", "xenia"))
         self.core.save_plugin_options("plugin_tts_silero", opts)
-        return self.api_room_say({"id": params.get("room"), "text": "Привет! Я Ирина. Так звучит мой голос."})
+        return self.api_room_say({"id": params.get("room"), "text": "Привет! Я Руслана. Так звучит мой голос."})
 
     def api_server_restart(self, params):
         logger.warning("Перезапуск по команде со страницы")
 
         def bye():
             time.sleep(0.7)
-            os._exit(3)                        # systemd (Restart=on-failure) запустит Ирину заново
+            os._exit(3)                        # systemd (Restart=on-failure) запустит Руслану заново
         threading.Thread(target=bye, daemon=True).start()
         return True
 

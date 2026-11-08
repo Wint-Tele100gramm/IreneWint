@@ -1,0 +1,10 @@
+configuration:
+  asr_model:
+    name: Speech recognition model
+    description: "small (~100 MB RAM) or full (more accurate, ~250 MB RAM)."
+  multiroom:
+    name: Multiroom music (Snapcast)
+    description: "Snapcast server on ports 1704/1705 for synchronized music on ESP32 clients. Disable if the ports are already taken."
+  download_jokes:
+    name: Download jokes
+    description: Once, on first start, in the background.

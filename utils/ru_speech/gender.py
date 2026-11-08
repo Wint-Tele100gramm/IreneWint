@@ -20,7 +20,7 @@ class GenderDefinition(NamedTuple):
 
 
 FEMALE = GenderDefinition(
-    # Женский род, "Я, Ирина"
+    # Женский род, "Я, Руслана"
     code='female',
 )
 

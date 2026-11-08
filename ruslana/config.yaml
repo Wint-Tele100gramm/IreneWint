@@ -1,0 +1,36 @@
+name: Руслана
+version: "1.0.0"
+slug: ruslana
+description: Офлайн голосовой помощник для умного дома — клиенты ESP32 в комнатах, Яндекс Музыка по комнатам, погода, нейросеть
+url: https://github.com/Wint-Tele100gramm/IreneWint/tree/rk3528/ruslana
+arch:
+  - aarch64
+  - amd64
+init: false
+startup: application
+boot: auto
+# клиенты ESP32 находят сервер по адресу Home Assistant; Snapcast (мультирум) — порты 1704 и 1705
+host_network: true
+homeassistant_api: true
+ingress: true
+ingress_port: 8765
+panel_icon: mdi:account-voice
+panel_title: Руслана
+webui: "http://[HOST]:[PORT:8765]/"
+ports:
+  8765/tcp: 8765
+ports_description:
+  8765/tcp: Клиенты ESP32 и веб-интерфейс
+backup_exclude:
+  - "models/*"
+  - "model-sherpa/*"
+  - "tts_cache/*"
+  - "temp/*"
+options:
+  asr_model: small
+  multiroom: true
+  download_jokes: true
+schema:
+  asr_model: list(small|full)
+  multiroom: bool
+  download_jokes: bool

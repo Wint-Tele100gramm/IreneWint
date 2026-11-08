@@ -1,5 +1,5 @@
 [Unit]
-Description=Snapcast client: Irene multiroom music on this box's speaker
+Description=Snapcast client: Ruslana multiroom music on this box's speaker
 After=irene-snapserver.service pipewire.service pipewire-pulse.service
 Wants=irene-snapserver.service
 

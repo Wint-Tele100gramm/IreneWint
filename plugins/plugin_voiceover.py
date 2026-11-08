@@ -1,4 +1,4 @@
-# Озвучивание текста: «ирина скажи привет всем»
+# Озвучивание текста: «руслана скажи привет всем»
 # author: Vladislav Janvarev
 
 from vacore import VACore

@@ -1,4 +1,4 @@
-# Голос Ирины: Silero TTS (офлайн, PyTorch).
+# Голос Русланы: Silero TTS (офлайн, PyTorch).
 # Модель — один файл models/silero/<modelId>.pt; PyTorch и модель ставит scripts/rk3528/get_tts_silero.sh
 # (его вызывает install.sh), он же показывает скорость синтеза на этой машине.
 #
@@ -56,7 +56,7 @@ def model_path(model_id: str) -> str:
 
 
 def load_model(model_id: str, threads: int):
-    """Загрузить модель (без ядра Ирины — для теста скорости)."""
+    """Загрузить модель (без ядра Русланы — для теста скорости)."""
     import torch
     torch.set_num_threads(max(1, int(threads)))
     path = model_path(model_id)

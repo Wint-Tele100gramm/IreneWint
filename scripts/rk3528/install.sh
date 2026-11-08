@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Установка Ирины на ТВ-приставку (Armbian/Debian, aarch64): RK3528, S905 и другие.
+# Установка Русланы на ТВ-приставку (Armbian/Debian, aarch64): RK3528, S905 и другие.
 # Запускать от обычного пользователя (не root) из корня репозитория:
-#     bash scripts/rk3528/install.sh            # всё: Ирина, мультирум Snapcast, Bluetooth, DLNA
+#     bash scripts/rk3528/install.sh            # всё: Руслана, мультирум Snapcast, Bluetooth, DLNA
 #     bash scripts/rk3528/install.sh --no-bt    # без Bluetooth
 #     bash scripts/rk3528/install.sh --no-multiroom   # музыка только на динамике приставки (без Snapcast)
 #     bash scripts/rk3528/install.sh --aec      # + эхоподавление PipeWire (опционально)
@@ -42,7 +42,7 @@ while [ $# -gt 0 ]; do
   shift
 done
 if [ $LITE = 1 ]; then
-  echo "==> Облегчённый режим (ОЗУ ${MEM_MB} МБ): без DLNA и Bluetooth, zram, лимит памяти Ирины 800 МБ"
+  echo "==> Облегчённый режим (ОЗУ ${MEM_MB} МБ): без DLNA и Bluetooth, zram, лимит памяти Русланы 800 МБ"
   WITH_BT=0; WITH_DLNA=0
 fi
 
@@ -79,7 +79,7 @@ if [ -n "$MISSING" ]; then
   echo
   echo "!! Не удалось установить:$MISSING"
   case "$MISSING" in *mpv*|*libportaudio2*|*pipewire-pulse*)
-    echo "!! Без этих пакетов Ирина не заработает. Пришлите вывод: sudo apt-get install$MISSING"; exit 1 ;;
+    echo "!! Без этих пакетов Руслана не заработает. Пришлите вывод: sudo apt-get install$MISSING"; exit 1 ;;
   esac
   echo "!! Остальное необязательно — соответствующая функция (мультирум/DLNA/Bluetooth) не будет работать."
   echo
@@ -122,7 +122,7 @@ fi
 # остатки прежних версий, больше не нужны
 "${PIP[@]}" uninstall -y vosk >/dev/null 2>&1 || true
 
-echo "==> Настройки Ирины (все — в папке options)"
+echo "==> Настройки Русланы (все — в папке options)"
 mkdir -p "$REPO/options" "$REPO/temp"
 # значения по умолчанию — в коде; в options/ лежат только ваши настройки. Переезд со старой раскладки:
 [ -e "$REPO/runva_rooms.json" ] && [ ! -e "$REPO/options/rooms.json" ] && mv "$REPO/runva_rooms.json" "$REPO/options/rooms.json"
@@ -131,14 +131,14 @@ echo "==> Сервер комнат (клиенты ESP32)"
 ROOMS="$REPO/options/rooms.json"
 if [ ! -e "$ROOMS" ]; then
   ROOMS_TOKEN="$("$REPO/.venv/bin/python" -c 'import secrets; print(secrets.token_urlsafe(12))')"
-  printf '{\n    "token": "%s"\n}\n' "$ROOMS_TOKEN" > "$ROOMS"   # остальное Ирина допишет сама при запуске
+  printf '{\n    "token": "%s"\n}\n' "$ROOMS_TOKEN" > "$ROOMS"   # остальное Руслана допишет сама при запуске
 fi
 chmod 600 "$ROOMS"
 ROOMS_TOKEN="$("$REPO/.venv/bin/python" -c "import json; print(json.load(open('$ROOMS'))['token'])")"
 
 if [ ! -s "$REPO/model-sherpa/tokens.txt" ] && [ ! -s "$REPO/model-sherpa/lang/tokens.txt" ]; then
   echo "==> Модель распознавания речи (потоковая Vosk, малая int8)"
-  bash "$SCRIPTS/get_asr_model.sh" small || echo "!! Не скачалась — без неё Ирина не запустится. Повторите: bash $SCRIPTS/get_asr_model.sh"
+  bash "$SCRIPTS/get_asr_model.sh" small || echo "!! Не скачалась — без неё Руслана не запустится. Повторите: bash $SCRIPTS/get_asr_model.sh"
 fi
 rm -rf "$REPO/model"   # старая модель Kaldi из прежних версий (~90 МБ) больше не используется
 
@@ -150,7 +150,7 @@ rm -rf "$HOME"/.cache/vosk/vosk-model-tts-*
 sed -i 's/"ttsEngineId": *"vosk"/"ttsEngineId": "silero"/' "$REPO/options/core.json" 2>/dev/null || true
 rm -f "$REPO/options/plugin_tts_vosk.json"
 
-echo "==> Разрешение Ирине включать максимальную частоту процессора на время речи"
+echo "==> Разрешение Руслане включать максимальную частоту процессора на время речи"
 if ls /sys/devices/system/cpu/cpufreq/policy*/scaling_governor >/dev/null 2>&1; then
   echo "z /sys/devices/system/cpu/cpufreq/policy*/scaling_governor 0664 root $(id -gn) -" \
     | sudo tee /etc/tmpfiles.d/irene-cpufreq.conf >/dev/null
@@ -221,9 +221,9 @@ fi
 if [ $WITH_BT = 1 ]; then
   echo "==> Bluetooth-колонка (Android и iOS)"
   sudo usermod -aG bluetooth "$USER"
-  sudo sed -i -E 's/^#?\s*Name\s*=.*/Name = Irene/; s/^#?\s*Class\s*=.*/Class = 0x200414/; s/^#?\s*DiscoverableTimeout\s*=.*/DiscoverableTimeout = 180/' /etc/bluetooth/main.conf
+  sudo sed -i -E 's/^#?\s*Name\s*=.*/Name = Ruslana/; s/^#?\s*Class\s*=.*/Class = 0x200414/; s/^#?\s*DiscoverableTimeout\s*=.*/DiscoverableTimeout = 180/' /etc/bluetooth/main.conf
   # Приставка без монитора: WirePlumber по умолчанию включает Bluetooth-звук только при «активном сеансе за экраном»,
-  # а через SSH такого нет — телефон видит Irene, но подключиться не может («Не удалось подключиться»).
+  # а через SSH такого нет — телефон видит Ruslana, но подключиться не может («Не удалось подключиться»).
   mkdir -p ~/.config/wireplumber/bluetooth.lua.d ~/.config/wireplumber/wireplumber.conf.d
   echo 'bluez_monitor.properties["with-logind"] = false' > ~/.config/wireplumber/bluetooth.lua.d/80-irene-headless.lua
   printf 'wireplumber.profiles = {\n  main = {\n    monitor.bluez.seat-monitoring = disabled\n  }\n}\n' \
@@ -244,11 +244,11 @@ if [ $WITH_BT = 1 ]; then
   fi
 fi
 
-echo "==> Сервис Ирины"
+echo "==> Сервис Русланы"
 sed "$UNIT_SED" "$SCRIPTS/irene.service" > ~/.config/systemd/user/irene.service
 if [ $LITE = 1 ]; then
   # 1 ГБ: голос Silero (~450 МБ) + распознавание + mpv — около 700 МБ. Ниже MemoryHigh ядро постоянно выдавливает
-  # Ирину в подкачку и притормаживает её на каждом выделении памяти (заметно как паузы в ответах).
+  # Руслану в подкачку и притормаживает её на каждом выделении памяти (заметно как паузы в ответах).
   sed -i 's/^MemoryHigh=.*/MemoryHigh=780M/; s/^MemoryMax=.*/MemoryMax=870M/' ~/.config/systemd/user/irene.service
 fi
 chmod +x "$SCRIPTS"/*.sh

@@ -1,9 +1,9 @@
 # Управление умным домом через Home Assistant (в т.ч. устройствами ZHA/Zigbee)
 # Работает через REST API Home Assistant и долгоживущий токен доступа.
 #
-# Примеры: "ирина включи свет на кухне", "ирина выключи весь свет",
-#          "ирина яркость в спальне тридцать процентов", "ирина закрой шторы",
-#          "ирина какая температура в детской", "ирина активируй сцену кино"
+# Примеры: "руслана включи свет на кухне", "руслана выключи весь свет",
+#          "руслана яркость в спальне тридцать процентов", "руслана закрой шторы",
+#          "руслана какая температура в детской", "руслана активируй сцену кино"
 #          (погоду говорит plugin_weather)
 #
 # Устройства находятся автоматически по их имени и зоне (area) в Home Assistant.
@@ -20,7 +20,6 @@ import difflib
 import requests
 
 from vacore import VACore, DialogTimeout
-from utils.num_to_text_ru import num2text
 from utils.ru_words_to_num import extract_number
 from utils.cmd_route import delegate_longer_command
 
@@ -103,6 +102,9 @@ def start(core: VACore):
 def start_with_options(core: VACore, manifest: dict):
     global _options
     options = manifest["options"]
+    if not options.get("token") and os.environ.get("SUPERVISOR_TOKEN"):
+        # дополнение Home Assistant OS: адрес и токен даёт Supervisor, вводить их не нужно
+        options = dict(options, url="http://supervisor/core", token=os.environ["SUPERVISOR_TOKEN"])
     _options = options
     if not options.get("token"):
         print("plugin_homeassistant: не задан token в options/plugin_homeassistant.json — команды умного дома не будут работать")
@@ -386,7 +388,7 @@ _ACTION_WORDS = {"on": "включить", "off": "выключить", "toggle"
 
 
 def _ask_what(core, action):
-    """«Ирина, включи» — переспрашиваем, что именно (диалог: ответ без имени)."""
+    """«Руслана, включи» — переспрашиваем, что именно (диалог: ответ без имени)."""
     try:
         answer = yield f"Что {_ACTION_WORDS.get(action, 'сделать')}?"
     except DialogTimeout:

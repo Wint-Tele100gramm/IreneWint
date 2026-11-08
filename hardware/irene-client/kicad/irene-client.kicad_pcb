@@ -541,7 +541,7 @@
   )
 
   (footprint "Espressif:ESP32-S3-WROOM-1" (layer "F.Cu")
-    (tedit 6aef7b85) (tstamp 989a2ab6-d190-5684-997d-6bc019fc24ac)
+    (tedit 6af01859) (tstamp 989a2ab6-d190-5684-997d-6bc019fc24ac)
     (at 157.8 96.05)
     (descr "ESP32-S3-WROOM-1 is a powerful, generic Wi-Fi + Bluetooth LE MCU modules that have Dual core CPU , a rich set of peripherals, provides acceleration for neural network computing and signal processing workloads. They are an ideal choice for a wide variety of application scenarios related to AI + Internet of Things (AIoT), such as wake word detection and speech commands recognition , face detection and recognition, smart home, smart appliance, smart control panel, smart speaker etc.")
     (tags "esp32-s3")
@@ -2920,7 +2920,7 @@
   (gr_text "BOOT" (at 162.0 106.9) (layer "F.SilkS") (tstamp 238825e6-4c78-5fee-983f-4d6a44a189c9)
     (effects (font (size 0.8 0.8) (thickness 0.15)) (justify left))
   )
-  (gr_text "IRENE CLIENT V3" (at 104.0 128.0) (layer "B.SilkS") (tstamp fb73e95b-01bf-552b-a797-44c882bec52e)
+  (gr_text "RUSLANA CLIENT V3" (at 104.0 128.0) (layer "B.SilkS") (tstamp fb73e95b-01bf-552b-a797-44c882bec52e)
     (effects (font (size 1.0 1.0) (thickness 0.15)) (justify right mirror))
   )
   (gr_text "G" (at 104.2 83.0) (layer "F.SilkS") (tstamp 826f08a6-c6e4-57ed-99ab-cb90c5c813c5)

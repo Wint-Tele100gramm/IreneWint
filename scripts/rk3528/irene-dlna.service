@@ -1,10 +1,10 @@
 [Unit]
-Description=DLNA/UPnP renderer for Irene (gmediarender)
+Description=DLNA/UPnP renderer for Ruslana (gmediarender)
 After=pipewire-pulse.service network-online.target
 Wants=pipewire-pulse.service
 
 [Service]
-ExecStart=/usr/bin/gmediarender -f "Ирина" --gstout-audiosink=pulsesink --logfile=/dev/null
+ExecStart=/usr/bin/gmediarender -f "Руслана" --gstout-audiosink=pulsesink --logfile=/dev/null
 Restart=on-failure
 RestartSec=5
 

@@ -1,5 +1,5 @@
 M48
-; Irene client board, non-plated holes
+; Ruslana client board, non-plated holes
 ; #@! TF.FileFunction,NonPlated,1,2,NPTH
 FMAT,2
 METRIC

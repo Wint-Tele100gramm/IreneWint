@@ -46,7 +46,7 @@ def _post(path, data, timeout=15):
     return body
 
 
-def request_code(mode="music", device_name="Ирина — голосовой помощник", device_id=None):
+def request_code(mode="music", device_name="Руслана — голосовой помощник", device_id=None):
     """Возвращает dict: device_code, user_code, verification_url, interval, expires_in."""
     scope, optional = MODES[mode]
     data = {"client_id": CLIENT_ID, "device_id": device_id or secrets.token_hex(8), "device_name": device_name}

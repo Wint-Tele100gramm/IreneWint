@@ -1,4 +1,4 @@
-# Основные настройки Ирины (options/core.json)
+# Основные настройки Русланы (options/core.json)
 # author: Vladislav Janvarev; упрощено: без MPC-HC, веб-API и ИИ-плагинов
 
 import logging
@@ -11,19 +11,19 @@ def start(core: VACore):
     return {
         "name": "Core plugin",
         "version": "6.0",
-        "description": "Основные настройки Ирины. Команды — в других плагинах.",
+        "description": "Основные настройки Русланы. Команды — в других плагинах.",
 
         "options_label": {
-            "isOnline": "Выполнять команды плагинов, которым нужен интернет (Яндекс Музыка)",
+            "isOnline": "Выполнять команды плагинов, которым нужен интернет (музыка, погода, нейросеть)",
             "useTTSCache": "Кэшировать озвучку (повторяющиеся ответы звучат сразу)",
-            "ttsEngineId": "Движок озвучки: vosk (или console — только текст)",
+            "ttsEngineId": "Движок озвучки: silero (или console — только текст)",
             "playWavEngineId": "Проигрывание WAV: aplay (Linux) или sounddevice (Windows и др.)",
             "voiceAssNames": "Имена помощника через | (все формы)",
             "logPolicy": "all|cmd|none — выводить в консоль все распознанные фразы | только команды | ничего",
             "replyNoCommandFound": "Ответ, если команда не понята",
             "replyNoCommandFoundInContext": "Ответ, если не понят ответ на вопрос",
             "replyOnlineRequired": "Ответ, если команде нужен интернет, а он выключен",
-            "contextDefaultDuration": "Сколько секунд ждать ответа на вопрос Ирины (без имени)",
+            "contextDefaultDuration": "Сколько секунд ждать ответа на вопрос Русланы (без имени)",
             "contextExitCommand": "Слово досрочного выхода из диалога (пусто — нет)",
             "tempDir": "Папка временных файлов",
             "fuzzyThreshold": "Порог уверенности нечётких сравнителей команд",
@@ -41,7 +41,7 @@ def start(core: VACore):
             "useTTSCache": True,
             "ttsEngineId": "silero",
             "playWavEngineId": "sounddevice" if os.name == "nt" else "aplay",
-            "voiceAssNames": "ирина|ирины|ирину",
+            "voiceAssNames": "руслана|русланы|руслану",
             "logPolicy": "cmd",
             "replyNoCommandFound": "Извини, я не поняла",
             "replyNoCommandFoundInContext": "Не поняла...",

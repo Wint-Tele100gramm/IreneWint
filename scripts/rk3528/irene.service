@@ -1,5 +1,5 @@
 [Unit]
-Description=Irene voice assistant
+Description=Ruslana voice assistant
 After=pipewire.service pipewire-pulse.service wireplumber.service irene-snapserver.service
 Wants=pipewire-pulse.service
 
@@ -14,7 +14,7 @@ ExecStart=@REPO@/.venv/bin/python runva_rooms.py
 RestartForceExitStatus=3
 Restart=on-failure
 RestartSec=2
-# не даём Ирине съесть всю память приставки
+# не даём Руслане съесть всю память приставки
 MemoryHigh=900M
 MemoryMax=1200M
 Nice=-5

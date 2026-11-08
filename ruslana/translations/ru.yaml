@@ -1,0 +1,10 @@
+configuration:
+  asr_model:
+    name: Модель распознавания речи
+    description: "small — малая (~100 МБ памяти), full — полная, точнее (~250 МБ). При смене модель скачается заново при следующем запуске."
+  multiroom:
+    name: Музыка по комнатам (Snapcast)
+    description: "Сервер Snapcast на портах 1704 и 1705 — клиенты ESP32 играют музыку синхронно. Выключите, если эти порты уже заняты (например, Snapcast в Music Assistant)."
+  download_jokes:
+    name: Скачать анекдоты
+    description: Один раз при первом запуске, в фоне.

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Ирина</title>
+<title>Руслана</title>
 <style>
 :root {
   --bg: #f4f5f7; --panel: #ffffff; --text: #1d2125; --muted: #66707a; --line: #e2e5e9;
@@ -99,7 +99,7 @@ audio { height: 32px; max-width: 100%; }
 <body>
 
 <div id="login" class="card" hidden>
-  <h3>Ирина</h3>
+  <h3>Руслана</h3>
   <p class="sub">Пароль — ключ клиентов (<code>token</code> из options/rooms.json) или пароль страницы, если он задан.</p>
   <form id="loginForm" class="row">
     <input id="pw" type="password" class="grow" placeholder="Пароль" autocomplete="current-password">
@@ -112,7 +112,7 @@ audio { height: 32px; max-width: 100%; }
 <header>
   <div class="top">
     <span class="dot" id="conn" title="Связь с сервером"></span>
-    <span class="logo">Ирина</span>
+    <span class="logo">Руслана</span>
     <span class="sys" id="sys"></span>
   </div>
   <nav id="nav">
@@ -126,7 +126,7 @@ audio { height: 32px; max-width: 100%; }
 
 <main>
   <div class="banner" id="restartBanner">
-    <span class="grow">Часть настроек применится после перезапуска Ирины (около минуты).</span>
+    <span class="grow">Часть настроек применится после перезапуска Русланы (около минуты).</span>
     <button class="btn primary" id="restartBtn">Перезапустить</button>
   </div>
 
@@ -141,7 +141,7 @@ audio { height: 32px; max-width: 100%; }
       <p class="hint">В Arduino IDE: «Скетч → Экспорт скомпилированного бинарного файла», затем выберите здесь файл
         <code>IreneClient.ino.bin</code> из папки <code>build</code> скетча (не <code>.merged.bin</code> и не <code>.bootloader.bin</code>).
         Прошивки для ESP32 и ESP32-S3 разные — загрузите обе, если есть оба вида клиентов. Клиенту нужна прошивка 3.2+,
-        более старые один раз обновите из Arduino IDE. Если новая прошивка не подключится к Ирине за 3 минуты, клиент сам вернётся к прежней.</p>
+        более старые один раз обновите из Arduino IDE. Если новая прошивка не подключится к Руслане за 3 минуты, клиент сам вернётся к прежней.</p>
       <div class="row"><input type="file" id="fwFile" accept=".bin" class="grow"><button class="btn primary" id="fwUpload">Загрузить</button></div>
       <div class="list" id="fwList" style="margin-top:10px"></div>
     </details>
@@ -154,11 +154,11 @@ audio { height: 32px; max-width: 100%; }
         <select id="cmdRoom" title="Где выполнить и куда ответить"></select>
         <button class="btn primary">Выполнить</button>
       </form>
-      <p class="hint">Ответ прозвучит в выбранной комнате. Если Ирина задала вопрос — ответ вводите сюда же.</p>
+      <p class="hint">Ответ прозвучит в выбранной комнате. Если Руслана задала вопрос — ответ вводите сюда же.</p>
     </div>
     <h2>Последние фразы</h2>
     <div class="list" id="phrases"></div>
-    <details id="cmdListBox"><summary>Все команды Ирины</summary><div class="list" id="cmdList" style="margin-top:8px"></div></details>
+    <details id="cmdListBox"><summary>Все команды Русланы</summary><div class="list" id="cmdList" style="margin-top:8px"></div></details>
   </section>
 
   <section class="tab" id="tab-scenes">
@@ -167,7 +167,7 @@ audio { height: 32px; max-width: 100%; }
     <div class="grid" id="scenes"></div>
     <div class="row"><button class="btn" id="addScene">+ Сценарий</button></div>
     <h2>Свои фразы (псевдонимы)</h2>
-    <p class="hint">«зажги» → «включи свет»: «Ирина, зажги на кухне» = «Ирина, включи свет на кухне». Варианты через |.</p>
+    <p class="hint">«зажги» → «включи свет»: «Руслана, зажги на кухне» = «Руслана, включи свет на кухне». Варианты через |.</p>
     <div class="card" id="aliases"></div>
     <div class="row">
       <button class="btn" id="addAlias">+ Фраза</button>
@@ -221,9 +221,10 @@ function fmtDur(s) {
 }
 
 // ---------------------------------------------------------------- связь с сервером
+const BASE = location.pathname.replace(/[^/]*$/, "");   // "/" или путь ingress Home Assistant
 let ws, nextId = 1, pending = new Map(), sessionKey = store.get("irene_key"), state = { rooms: [] };
 function connect() {
-  ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ui");
+  ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + BASE + "ui");
   ws.onmessage = ev => {
     const m = JSON.parse(ev.data);
     if (m.id != null && pending.has(m.id)) {
@@ -235,7 +236,7 @@ function connect() {
 }
 function call(method, params = {}) {
   return new Promise((resolve, reject) => {
-    if (!ws || ws.readyState !== 1) return reject(new Error("Нет связи с Ириной"));
+    if (!ws || ws.readyState !== 1) return reject(new Error("Нет связи с Русланой"));
     const id = nextId++; pending.set(id, { resolve, reject });
     ws.send(JSON.stringify({ id, method, params }));
   });
@@ -290,7 +291,7 @@ $("#nav").addEventListener("click", e => { if (e.target.dataset.tab) openTab(e.t
 function renderSys(s) {
   if (!s) return;
   const parts = [];
-  if (s.rss_mb != null) parts.push(`Ирина ${s.rss_mb} МБ`);
+  if (s.rss_mb != null) parts.push(`Руслана ${s.rss_mb} МБ`);
   if (s.mem_avail_mb != null) parts.push(`свободно ${s.mem_avail_mb} из ${s.mem_total_mb} МБ`);
   if (s.temp_c != null) parts.push(`${s.temp_c} °C`);
   if (s.disk_free_mb != null) parts.push(`диск ${(s.disk_free_mb / 1024).toFixed(1)} ГБ`);
@@ -508,7 +509,7 @@ function renderRooms(force) {
           return el("label", { class: "row", style: "margin:0", title }, c, el("span", {}, label));
         };
         card.append(el("div", { class: "row" },
-          box("aec", "Эхоподавление", "Убирает из микрофона музыку и голос своего динамика — Ирина слышит команды поверх музыки"),
+          box("aec", "Эхоподавление", "Убирает из микрофона музыку и голос своего динамика — Руслана слышит команды поверх музыки"),
           box("ns", "Шумоподавление", "Убирает ровный фон: вентилятор, гул")));
       }
       if (r.agc) card.append(slider("Не больше", r.agc_max ?? 30, 0, 30, " дБ", false, v => mic("agc_max", v), r.id + "am"));
@@ -588,14 +589,14 @@ async function loadDumps() {
   const box = $("#dumps"); box.replaceChildren();
   let d; try { d = await call("dump.list"); } catch (e) { return; }
   if (!d.enabled) {
-    return box.append(el("p", { class: "hint" }, "Запись фраз выключена. Включите в «Настройки → Сервер и клиенты → Записывать фразы в WAV» — пригодится, если Ирина плохо понимает какую-то комнату."));
+    return box.append(el("p", { class: "hint" }, "Запись фраз выключена. Включите в «Настройки → Сервер и клиенты → Записывать фразы в WAV» — пригодится, если Руслана плохо понимает какую-то комнату."));
   }
   if (!d.files.length) return box.append(el("p", { class: "hint" }, "Записей пока нет — скажите что-нибудь."));
   const list = el("div", { class: "list" });
   for (const f of d.files.slice(0, 40)) {
     const m = f.name.match(/^(\d{8})-(\d{2})(\d{2})(\d{2})_(.+?)_(\d+)_(.*)\.wav$/);
     const label = m ? `${m[2]}:${m[3]}:${m[4]} · ${m[5]} · уровень ${m[6]} · «${m[7].replace(/_/g, " ")}»` : f.name;
-    const audio = el("audio", { controls: true, preload: "none", src: `/dump/${encodeURIComponent(f.name)}?k=${encodeURIComponent(sessionKey || "")}` });
+    const audio = el("audio", { controls: true, preload: "none", src: `${BASE}dump/${encodeURIComponent(f.name)}?k=${encodeURIComponent(sessionKey || "")}` });
     list.append(el("div", { class: "item", style: "flex-wrap:wrap" }, el("span", { class: "what" }, label), audio));
   }
   box.append(list);
@@ -639,7 +640,7 @@ async function loadSettings() {
       actions.prepend(room, el("button", { class: "btn", onclick: () => act(call("voice.test", { speaker: inputs.speaker[1].value, room: room.value }), "Слушайте") }, "Послушать"));
     }
     if (sec.id === "music") {
-      const mode = el("select", { id: "yandexMode", title: "Какие права выдать Ирине" },
+      const mode = el("select", { id: "yandexMode", title: "Какие права выдать Руслане" },
         el("option", { value: "music" }, "Права: только Музыка"),
         el("option", { value: "music_login" }, "Права: Музыка + имя аккаунта"),
         el("option", { value: "all" }, "Права: все права приложения"));
@@ -648,7 +649,7 @@ async function loadSettings() {
       actions.prepend(el("div", { style: "display:flex;flex-direction:column;gap:8px;flex:1 1 100%" },
         el("div", { class: "row", style: "margin:0" }, mode, el("button", { class: "btn", onclick: yandexLogin }, "Войти в Яндекс")),
         el("span", { id: "yandexBox", class: "hint" },
-          "Ирина входит от имени приложения «Яндекс.Музыка» и запросит только выбранные права. Отозвать доступ: id.yandex.ru → Безопасность.")));
+          "Руслана входит от имени приложения «Яндекс.Музыка» и запросит только выбранные права. Отозвать доступ: id.yandex.ru → Безопасность.")));
     }
     actions.append(save);
     box.append(el("h2", {}, sec.title), el("div", { class: "card" }, form, actions));

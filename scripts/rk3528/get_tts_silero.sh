@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Голос Ирины — Silero TTS: ставит PyTorch (сборка для процессора) в окружение Ирины, модель в models/silero
+# Голос Русланы — Silero TTS: ставит PyTorch (сборка для процессора) в окружение Русланы, модель в models/silero
 # и показывает скорость синтеза на этой машине. Вызывается из install.sh; можно запускать и отдельно.
 #     bash scripts/rk3528/get_tts_silero.sh             # поставить и проверить скорость
 #     bash scripts/rk3528/get_tts_silero.sh --no-bench  # без проверки скорости
@@ -8,7 +8,7 @@ set -euo pipefail
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 PY="$REPO/.venv/bin/python"
 
-[ -x "$PY" ] || { echo "!! Нет $PY — сначала установите Ирину (scripts/rk3528/install.sh)"; exit 1; }
+[ -x "$PY" ] || { echo "!! Нет $PY — сначала установите Руслану (scripts/rk3528/install.sh)"; exit 1; }
 
 # pip и SOCKS-прокси уживаются плохо — как в install.sh: если PyPI доступен напрямую, ставим без прокси
 PIP=("$REPO/.venv/bin/pip" --timeout 120 --retries 5)
@@ -22,7 +22,7 @@ fi
 MEM_MB=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)
 if [ "$MEM_MB" -lt 1800 ]; then
   echo "!! Памяти ${MEM_MB} МБ: голос Silero займёт 450–650 МБ. Нужна подкачка zram (install.sh включает её сам);"
-  echo "   число ядер на озвучку можно уменьшить на странице Ирины (Голос)."
+  echo "   число ядер на озвучку можно уменьшить на странице Русланы (Голос)."
 fi
 
 if "$PY" -c "import torch" 2>/dev/null; then
@@ -52,7 +52,7 @@ fi
 du -sh "$DIR/$MODEL.pt"
 
 if [ "${1:-}" != "--no-bench" ]; then
-  echo "==> Проверка скорости (Ирину на время проверки лучше остановить: systemctl --user stop irene)"
+  echo "==> Проверка скорости (Руслану на время проверки лучше остановить: systemctl --user stop irene)"
   "$PY" "$REPO/scripts/tts_bench.py" || echo "!! Проверка не прошла — пришлите вывод выше"
   echo "Послушать образец: aplay $REPO/temp/tts_bench_silero_*.wav"
 fi

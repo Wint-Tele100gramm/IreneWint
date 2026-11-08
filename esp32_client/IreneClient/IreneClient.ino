@@ -1,14 +1,15 @@
-// Клиент Ирины для комнаты.
+// Клиент Русланы для комнаты.
 //  - слушает I2S-микрофон, и когда в комнате говорят — отправляет звук на сервер (runva_rooms.py)
 //  - проигрывает ответы сервера через I2S-усилитель
 //  - настройка Wi-Fi, адреса сервера и имени комнаты — через портал WiFiManager
 //
 //  - 2.0: настройки микрофона с сервера (веб-интерфейс), живой индикатор уровня, автоусиление по речи
-//  - 3.0: музыка по комнатам — клиент Snapcast (snap_proto.h): синхронно с другими комнатами, голос Ирины
-//         поверх музыки, музыка притихает, пока Ирина слушает команду и отвечает
+//  - 3.0: музыка по комнатам — клиент Snapcast (snap_proto.h): синхронно с другими комнатами, голос Русланы
+//         поверх музыки, музыка притихает, пока Руслана слушает команду и отвечает
 //  - 3.1: стерео 44100 Гц (S3), эхо- и шумоподавление микрофона на S3 (mic_aec.h, ESP-SR)
-//  - 3.2: обновление прошивки через сервер Ирины (веб-интерфейс) с откатом, если новая не заработала
+//  - 3.2: обновление прошивки через сервер Русланы (веб-интерфейс) с откатом, если новая не заработала
 //  - 3.3: два микрофона (MIC_COUNT 2): эхоподавление, разделение источников и выбор канала ESP-SR AFE
+//  - 3.5: помощник теперь называется Руслана: точка доступа настройки — Ruslana-XXXXXX
 //
 // Протокол описан в начале runva_rooms.py.
 //
@@ -109,7 +110,7 @@ bool otaPendingVerify = false;           // загружена новая про
 
 // музыка (Snapcast): сеть -> snapSched -> задача воспроизведения
 WiFiClient snapSock;
-String snapHost;                         // адрес сервера (тот же, что у Ирины)
+String snapHost;                         // адрес сервера (тот же, что у Русланы)
 snap::Parser* snapParser = nullptr;
 snap::TimeSync snapTime;
 snap::Schedule snapSched;
@@ -117,7 +118,7 @@ snap::SyncStats syncStats;
 volatile bool snapConnected = false;
 volatile bool snapFormatOk = false;
 snap::Resampler snapRes;                 // поток snapserver -> частота и каналы усилителя
-volatile int snapVolume = 100;           // громкость музыки в этой комнате (Ирина меняет через snapserver)
+volatile int snapVolume = 100;           // громкость музыки в этой комнате (Руслана меняет через snapserver)
 volatile bool snapMuted = false;
 volatile int snapBufferMs = 1000, snapLatencyMs = 0;
 volatile uint32_t musicHeardAt = 0;      // когда последний раз звучала музыка (детектор речи учитывает)
@@ -261,7 +262,7 @@ void onWifiEvent(arduino_event_id_t event, arduino_event_info_t info) {
 }
 
 // ---------------- Wi-Fi и страница настройки ----------------
-// Первый запуск: точка доступа "Irene-XXXXXX", страница настройки на 192.168.4.1.
+// Первый запуск: точка доступа "Ruslana-XXXXXX", страница настройки на 192.168.4.1.
 // После подключения к домашней сети та же страница доступна по IP клиента (http://<IP>/ -> "Setup").
 WiFiManager wm;
 WiFiManagerParameter *pServer, *pPort, *pRoom, *pName, *pToken, *pGain, *pVad, *pHang, *pAgc, *pAgcMax;
@@ -290,7 +291,7 @@ void applyParams() {
 
 void setupWifi() {
   snprintf(portStr, sizeof(portStr), "%u", cfg.port);
-  pServer = new WiFiManagerParameter("server", "Адрес сервера Ирины (IP приставки)", cfg.server.c_str(), 64);
+  pServer = new WiFiManagerParameter("server", "Адрес сервера Русланы (IP приставки)", cfg.server.c_str(), 64);
   pPort = new WiFiManagerParameter("port", "Порт", portStr, 6);
   pRoom = new WiFiManagerParameter("room", "ID комнаты латиницей (kitchen)", cfg.roomId.c_str(), 32);
   pName = new WiFiManagerParameter("name", "Название комнаты как в Home Assistant (Кухня)", cfg.roomName.c_str(), 64);
@@ -320,11 +321,11 @@ void setupWifi() {
   wm.setSaveConfigCallback([]() { portalSaved = true; });
   wm.setSaveParamsCallback([]() { if (WiFi.status() == WL_CONNECTED && !wm.getConfigPortalActive()) liveSaved = true;
                                   else portalSaved = true; });
-  wm.setTitle("Ирина");
+  wm.setTitle("Руслана");
   wm.setConfigPortalTimeout(300);
   wm.setConnectTimeout(20);
 
-  String ap = "Irene-" + cfg.roomId.substring(cfg.roomId.length() > 6 ? cfg.roomId.length() - 6 : 0);
+  String ap = "Ruslana-" + cfg.roomId.substring(cfg.roomId.length() > 6 ? cfg.roomId.length() - 6 : 0);
   led(true);
   if (!wm.autoConnect(ap.c_str())) {
     Serial.println("Wi-Fi не настроен, перезагрузка");
@@ -443,13 +444,13 @@ void setupAmp() {
 }
 
 // ---------------- воспроизведение (отдельная задача) ----------------
-// Каждые 11,6 мс — блок: ответ Ирины (из audioBuf) + музыка (из snapSched по расписанию) -> усилитель.
+// Каждые 11,6 мс — блок: ответ Русланы (из audioBuf) + музыка (из snapSched по расписанию) -> усилитель.
 // Блок, записанный сейчас, зазвучит через AMP_DMA_BUFS буферов DMA — по этому времени выбирается музыка
 // и по нему же эхоподавление сопоставляет микрофон с тем, что играет динамик.
 void playerTask(void*) {
   static int16_t tts[BLOCK], mus[BLOCK * 2], out[BLOCK * 2];
   static int16_t ttsFifo[BLOCK * 2], ttsIn[512];
-  static snap::Resampler ttsRes;  // голос Ирины (16–22 кГц моно) -> частота усилителя
+  static snap::Resampler ttsRes;  // голос Русланы (16–22 кГц моно) -> частота усилителя
   int ttsHave = 0;
   bool ttsReady = false;          // ответ накопил запас и играет
   bool active = false;            // усилитель включён, блоки идут
@@ -478,7 +479,7 @@ void playerTask(void*) {
       lastWriteUs = esp_timer_get_time();
     }
 
-    // ответ Ирины: пересчитываем в частоту усилителя
+    // ответ Русланы: пересчитываем в частоту усилителя
     memset(tts, 0, sizeof(tts));
     int nt = 0;
     if (playing) {
@@ -531,7 +532,7 @@ void playerTask(void*) {
       snapSched.checkFlush();
     }
 
-    // громкость: голос — volumePct, музыка — громкость комнаты в snapserver; пока Ирина слушает и отвечает — тише
+    // громкость: голос — volumePct, музыка — громкость комнаты в snapserver; пока Руслана слушает и отвечает — тише
     int vol = volumePct * VOLUME_LIMIT_PCT / 100;
     int32_t kt = vol * vol;                       // квадратичная шкала, 0..10000
     float target = 0;
@@ -594,7 +595,7 @@ void onSnapMessage(const snap::Header& h, const uint8_t* p, uint32_t len) {
       char codec[16];
       snap::Format f;
       bool ok = snap::parseCodecHeader(p, len, codec, sizeof(codec), f);
-      snapSched.requestFlush();                   // новый поток (Ирина переключила линию)
+      snapSched.requestFlush();                   // новый поток (Руслана переключила линию)
       snapFormatOk = false;
       if (ok && f.channels <= 2 && f.rate >= 8000 && f.rate <= 48000) {
         snapRes.setup(f.rate, f.channels, AMP_RATE, AMP_CH);
@@ -639,7 +640,7 @@ void snapSendHello() {
   doc["Arch"] = "xtensa";
   doc["ClientName"] = "IreneClient";
   doc["HostName"] = cfg.roomName;
-  doc["ID"] = cfg.roomId;                  // ID комнаты: по нему Ирина узнаёт, где играет музыка
+  doc["ID"] = cfg.roomId;                  // ID комнаты: по нему Руслана узнаёт, где играет музыка
   doc["Instance"] = 1;
   doc["MAC"] = WiFi.macAddress();
   doc["OS"] = ESP.getChipModel();
@@ -869,7 +870,7 @@ void onWsEvent(WStype_t type, uint8_t* payload, size_t length) {
   switch (type) {
     case WStype_CONNECTED:
       wsConnected = true;
-      Serial.println("Подключено к серверу Ирины");
+      Serial.println("Подключено к серверу Русланы");
       sendHello();
       break;
     case WStype_DISCONNECTED:
@@ -1123,7 +1124,7 @@ void processMic() {
   bool muted = playing || millis() - playEndMs < MIC_MUTE_AFTER_TTS_MS;
   if (!muted && rms > meterPeak) meterPeak = rms;
 
-  // пока звучит ответ (и чуть после) — микрофон не слушаем, иначе Ирина услышит саму себя
+  // пока звучит ответ (и чуть после) — микрофон не слушаем, иначе Руслана услышит саму себя
   if (muted) {
     if (inSpeech) endSpeech();
     prerollCount = 0;
@@ -1290,7 +1291,7 @@ void confirmFirmware() {
 void setup() {
   Serial.begin(115200);
   delay(200);
-  Serial.printf("\nКлиент Ирины %s\n", FW_VERSION);
+  Serial.printf("\nКлиент Русланы %s\n", FW_VERSION);
   if (LED_PIN >= 0) pinMode(LED_PIN, OUTPUT);
   if (AMP_SD >= 0) pinMode(AMP_SD, OUTPUT);
   ampEnable(false);

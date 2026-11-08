@@ -175,13 +175,13 @@ BLOCKS = [
 ]
 
 NOTES = [
-    (12, 289, "Плата клиента Ирины v2. Питание 5 В (J1). GPIO: микрофоны SCK 4, WS 5, SD 6; ЦАП DIN 7, BCK 15, LRCK 16; "
+    (12, 289, "Плата клиента Русланы v3. Питание 5 В (J1). GPIO: микрофоны SCK 4, WS 5, SD 6; ЦАП DIN 7, BCK 15, LRCK 16; "
               "AMP_EN 17 (XSMT + SHDN); LED 18."),
     (14, 215, "Разъёма USB на плате нет. Для первой прошивки подпаяться проводами к выводам модуля U1:"),
     (14, 221, "USB: вывод 13 (IO19, D-), 14 (IO20, D+), GND, питание 5 В на J1;"),
     (14, 227, "или UART: вывод 37 (TXD0), 36 (RXD0), GND — через переходник USB-UART 3,3 В."),
     (14, 233, "Вход в загрузчик: держать BOOT, нажать и отпустить RESET, отпустить BOOT."),
-    (14, 239, "Дальше прошивка обновляется по Wi-Fi через веб-интерфейс сервера Ирины."),
+    (14, 239, "Дальше прошивка обновляется по Wi-Fi через веб-интерфейс сервера Русланы."),
 ]
 
 
@@ -354,7 +354,7 @@ def build_svg():
                 draw_label(svg, net, x, y, dd)
     for x, y, t in NOTES:
         svg.text(x, y, t, 1.8, "start", "#333")
-    svg.text(408, 289, "Irene client v2 — схема", 2.0, "end", "#333", "bold")
+    svg.text(408, 289, "Ruslana client v3 — схема", 2.0, "end", "#333", "bold")
     body = "\n".join(svg.o)
     return (f'<svg xmlns="http://www.w3.org/2000/svg" width="{SHEET_W}mm" height="{SHEET_H}mm" '
             f'viewBox="0 0 {SHEET_W} {SHEET_H}" font-family="DejaVu Sans, Arial, sans-serif">\n'

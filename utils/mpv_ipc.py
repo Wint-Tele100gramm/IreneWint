@@ -2,7 +2,7 @@
 # Linux: unix-сокет. Windows: именованный канал \\.\pipe\irene-mpv — в синхронном режиме Windows не даёт
 # одновременно читать и писать, поэтому там всё делается под одной блокировкой, а события mpv
 # (конец трека) забираются опросом раз в полсекунды.
-# mpv запускается один раз в режиме --idle и живёт, пока работает Ирина.
+# mpv запускается один раз в режиме --idle и живёт, пока работает Руслана.
 
 import json
 import os
@@ -45,7 +45,7 @@ class MpvPlayer:
             self._proc = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                           stderr=subprocess.DEVNULL)
         except FileNotFoundError:
-            raise RuntimeError("Не найден mpv: " + ("положите mpv.exe в папку mpv рядом с Ириной"
+            raise RuntimeError("Не найден mpv: " + ("положите mpv.exe в папку mpv рядом с Русланой"
                                                    if IS_WIN else "sudo apt install mpv"))
         if IS_WIN:
             return self._start_windows()
@@ -108,12 +108,6 @@ class MpvPlayer:
                 if "event" in msg and self.on_event:
                     # обработчик — в отдельном потоке: он сам может звать mpv
                     threading.Thread(target=self.on_event, args=(msg,), daemon=True).start()
-
-    def stop_process(self):
-        if self._proc:
-            self._proc.terminate()
-        self._proc = None
-        self._sock = None
 
     def _read_loop(self):
         buf = b""

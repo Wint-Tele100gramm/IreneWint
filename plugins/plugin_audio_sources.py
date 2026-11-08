@@ -2,13 +2,13 @@
 # Сами приёмники (bt-agent, gmediarender) ставит scripts/rk3528/install.sh.
 #
 # С мультирумом звук с телефона не играет на динамике приставки, а идёт в отдельную линию Snapcast «Телефон»
-# (поток phone): PipeWire получает выход «Ирина: комнаты» (module-pipe-sink в fifo snapserver), и всё, что приходит
+# (поток phone): PipeWire получает выход «Руслана: комнаты» (module-pipe-sink в fifo snapserver), и всё, что приходит
 # по Bluetooth или DLNA, перенаправляется туда. Комнаты подключаются к линии так же, как к Яндекс Музыке:
-# «Ирина, блютуз на кухне», «добавь спальню», «как на кухне», «выключи музыку».
+# «Руслана, блютуз на кухне», «добавь спальню», «как на кухне», «выключи музыку».
 # Пауза, «дальше», «назад», «что играет» управляют телефоном (AVRCP через BlueZ).
 #
-# Примеры: "ирина режим сопряжения", "ирина подключи телефон", "ирина блютуз на кухне", "ирина телефон везде",
-#          "ирина блютуз выключи"
+# Примеры: "руслана режим сопряжения", "руслана подключи телефон", "руслана блютуз на кухне", "руслана телефон везде",
+#          "руслана блютуз выключи"
 
 import json
 import os
@@ -35,7 +35,7 @@ def start(core: VACore):
         "name": "Звук с телефона (Bluetooth / DLNA)",
         "version": "2.0",
         "require_online": False,
-        "description": "Bluetooth-сопряжение голосом; DLNA работает всегда, приёмник называется «Ирина». "
+        "description": "Bluetooth-сопряжение голосом; DLNA работает всегда, приёмник называется «Руслана». "
                        "С мультирумом звук с телефона идёт в комнаты: «блютуз на кухне», «телефон везде».",
         "commands": {
             # раньше сопряжения: иначе «блютуз на кухне» поймает команда «блютуз»
@@ -135,7 +135,7 @@ class PhoneLine:
         return MultiRoom(opts.get("snap_host", "127.0.0.1"), int(opts.get("snap_port", 1705)))
 
     def _ensure_sink(self, mr):
-        """Выход «Ирина: комнаты» в PipeWire, пишущий в fifo потока phone."""
+        """Выход «Руслана: комнаты» в PipeWire, пишущий в fifo потока phone."""
         if any(s.get("name") == SINK for s in _pactl_json("sinks")):
             self.sink_ok = True
             return True
@@ -148,7 +148,7 @@ class PhoneLine:
             return False
         code, out = _run(["pactl", "load-module", "module-pipe-sink", f"file={info['path']}", "format=s16le",
                           f"rate={info['rate']}", f"channels={info['channels']}", f"sink_name={SINK}",
-                          "sink_properties=device.description=Irene-rooms"])
+                          "sink_properties=device.description=Ruslana-rooms"])
         if code != 0:
             if not self.warned:
                 logger.warning(f"PipeWire не создал выход в комнаты (module-pipe-sink): {out.strip()} — "
@@ -313,7 +313,7 @@ def bt_pair(core: VACore, phrase: str):
     ok = _btctl("power", "on") and _btctl("discoverable", "on") and _btctl("pairable", "on")
     if ok:
         where = " Музыка с телефона зазвучит здесь." if _line is not None and _line.sink_ok else ""
-        core.say("Блютуз включён на три минуты. Найдите на телефоне устройство Irene." + where)
+        core.say("Блютуз включён на три минуты. Найдите на телефоне устройство Ruslana." + where)
     else:
         core.say("Не получилось включить блютуз. Проверьте адаптер")
 
@@ -336,6 +336,6 @@ def bt_off(core: VACore, phrase: str):
 
 
 def howto(core: VACore, phrase: str):
-    core.say("Скажите: режим сопряжения, и подключите телефон по блютузу к Irene. Музыка с телефона зазвучит "
+    core.say("Скажите: режим сопряжения, и подключите телефон по блютузу к Ruslana. Музыка с телефона зазвучит "
              "в этой комнате; другие комнаты добавляются так же, как с Яндекс Музыкой. "
-             "С андроида можно ещё выбрать Ирину в приложении с поддержкой DLNA")
+             "С андроида можно ещё выбрать Руслану в приложении с поддержкой DLNA")

@@ -1,4 +1,4 @@
-# Ядро Ирины: команды плагинов, контекст и диалоги, таймеры, озвучка.
+# Ядро Русланы: команды плагинов, контекст и диалоги, таймеры, озвучка.
 # На основе VACore Владислава Январева (MIT); убраны веб-API, ИИ-плагины, MPC-HC и второй движок озвучки.
 
 import hashlib
@@ -158,10 +158,6 @@ class VACore(JaaCore):
     def say(self, text_to_speech: str):
         self.play_voice_assistant_speech(text_to_speech)
 
-    def say2(self, text_to_speech: str):
-        # совместимость со старыми плагинами (раньше был второй движок озвучки)
-        self.say(text_to_speech)
-
     def tts_to_filewav(self, text_to_speech: str, filename: str):
         engine = self.ttss[self.ttsEngineId]
         if len(engine) > 2:
@@ -232,12 +228,6 @@ class VACore(JaaCore):
                 return res
         return None
 
-    def fuzzy_get_command_key_from_context(self, predicted_command: str, context: dict):
-        for keyall in context:
-            if predicted_command in keyall.split("|"):
-                return keyall
-        return None
-
     def execute_next(self, command, context):
         if context is None:              # первый вход
             context = self.commands
@@ -291,11 +281,6 @@ class VACore(JaaCore):
             self.call_ext_func(self.timersFuncEnd[index])
         self.timers[index] = -1
         self.timersFuncEnd[index] = None
-
-    def clear_timers(self):
-        for i in range(len(self.timers)):
-            self.timers[i] = -1
-            self.timersFuncEnd[i] = None
 
     def _update_timers(self):
         now = time.time()
@@ -358,7 +343,7 @@ class VACore(JaaCore):
         self.playwavs[self.playWavEngineId][1](self, wavfile)
 
     def run_input_str(self, voice_input_str, func_before_run_cmd=None):
-        """Разбор распознанной фразы: «ирина таймер пять» -> команда «таймер пять».
+        """Разбор распознанной фразы: «руслана таймер пять» -> команда «таймер пять».
         В контексте (диалог, игра) фраза выполняется целиком, без имени."""
         if voice_input_str is None:
             return False
@@ -420,7 +405,7 @@ class VACore(JaaCore):
 
     # ---------------------------------------------------------------- вывод при запуске
     def display_init_info(self):
-        cprint(f"Ирина, ядро v{version}:", "blue", end=" ")
+        cprint(f"Руслана, ядро v{version}:", "blue", end=" ")
         print("онлайн-команды включены" if self.isOnline else "только офлайн-команды")
         self.format_print_key_list("Озвучка", self.ttss.keys())
         self.format_print_key_list("Проигрывание WAV", self.playwavs.keys())

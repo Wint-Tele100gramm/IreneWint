@@ -1,5 +1,5 @@
 [Unit]
-Description=Snapcast server for Irene multiroom music
+Description=Snapcast server for Ruslana multiroom music
 After=network-online.target
 
 [Service]

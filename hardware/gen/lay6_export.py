@@ -90,7 +90,7 @@ def text(s, x, y, h, layer, mirror=False, center=False, visible=True, comp=0, ki
                 tht_shape=kind, component_id=comp, text=s, children=children)
 
 
-def build(parts, tracks, vias, stitch, silk_texts, name="Irene client v3", cutouts=()):
+def build(parts, tracks, vias, stitch, silk_texts, name="Ruslana client v3", cutouts=()):
     objs = []
     # ---------------- контур платы
     outline = board_outline_pts(0, n=12)
@@ -166,7 +166,7 @@ def build(parts, tracks, vias, stitch, silk_texts, name="Irene client v3", cutou
     return {"version": 6, "boards": [board], "active_board": 0,
             "project_name": lay6.fixed(name, 100), "project_author": lay6.fixed("", 100),
             "project_company": lay6.fixed("", 100),
-            "project_comment": "Irene voice assistant client: ESP32-S3 + PCM5102A + PAM8403 + 2x INMP441",
+            "project_comment": "Ruslana voice assistant client: ESP32-S3 + PCM5102A + PAM8403 + 2x INMP441",
             "tail": b""}
 
 
